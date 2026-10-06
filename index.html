@@ -1788,7 +1788,7 @@ function calcBroiler(R) {
 async function loadBroiler(id) {
   const q = (t, o) => sb.from(t).select('*').eq('batch_id', id).order(o).order('id');
   const r = await Promise.all([
-    sb.from('poultry_batches').select('*').eq('id', id).single(), q('poultry_events', 'event_date'), q('poultry_feed_log', 'log_date'),
+    sb.from('poultry_batches').select('*, loc:locations(name)').eq('id', id).single(), q('poultry_events', 'event_date'), q('poultry_feed_log', 'log_date'),
     q('poultry_supply_log', 'log_date'), q('poultry_weights', 'sample_date'), q('poultry_costs', 'cost_date'),
     sb.from('feed_formulas').select('*').order('id'), sb.from('feed_formula_items').select('*').order('id'),
     sb.from('poultry_targets').select('*').order('day'), sb.from('sale_items').select('quantity,line_total').eq('batch_id', id)]);
@@ -1842,8 +1842,8 @@ const brIns = (t, rows) => sb.from(t).insert(rows).then(r => r.error);
 
 async function drawBroiler() {
   try { BR.C = await loadBroiler(BR.id); } catch (e) { return $('#brBody').innerHTML = `<p class="neg">${esc(e.message)}<br>Have you run broiler_migration.sql in Supabase?</p>`; }
-  const TABS = [['summary','Summary'],['deaths','Deaths'],['feed','Feed'],['supplies','Medicine & charcoal'],['weights','Weights & FCR'],['costs','Other costs'],['formulas','Feed formulas']];
-  $('#brBody').innerHTML = `<div class="row-actions" style="margin-bottom:10px">${TABS.map(t => `<button class="btn small ${BR.tab === t[0] ? '' : 'ghost'}" data-tab="${t[0]}">${t[1]}</button>`).join('')}
+  const TABS = [['formulas','Feed formulation','#c8661a'],['setup','Setup & Prices','#1f4f3f'],['feed','Feed Log','#5b9e45'],['medication','Medication Log','#5b9e45'],['deaths','Mortality Log','#5b9e45'],['charcoal','Charcoal Log','#5b9e45'],['drug','Drugs Log','#5b9e45'],['weights','Weights & FCR','#5b9e45'],['summary','Batch Summary','#c00000']];
+  $('#brBody').innerHTML = `<div class="row-actions" style="margin-bottom:10px">${TABS.map(t => `<button class="btn small" data-tab="${t[0]}" style="background:${t[2]};color:#fff;border:0;${BR.tab === t[0] ? 'box-shadow:0 3px 0 #000;font-weight:700' : 'opacity:.6'}">${t[1]}</button>`).join('')}
     ${can('poultry_batches') ? '<button class="btn small ghost" data-add="settings">⚙ Batch settings</button>' : ''}</div><div id="brTab">${BT[BR.tab](BR.C)}</div>`;
   $('#brBody').querySelectorAll('[data-tab]').forEach(x => x.onclick = () => { BR.tab = x.dataset.tab; drawBroiler(); });
   $('#brBody').querySelectorAll('[data-add]').forEach(x => x.onclick = () => { const [k, a] = x.dataset.add.split(':'); ADD[k](BR.C, a); });
@@ -1855,13 +1855,54 @@ async function drawBroiler() {
     toast('Deleted'); drawBroiler(); });
 }
 
+
+function supplyTab(C, cat, title, hint, unitWord) {
+  const rows = C.supplies.filter(s => s.category === cat), it = {};
+  rows.forEach(r => { const x = it[r.item] = it[r.item] || { unit:'', rec:0, used:0, cost:0, price:0 };
+    x.rec += Number(r.qty_received); x.used += Number(r.qty_used); x.cost += r.cost; x.price = r.unit_price; x.unit = r.unit || x.unit; });
+  return `<div class="bar"><h4>${title}</h4>${addBtn('poultry_supply_log', 'supply:' + cat, '+ Record received / used')}</div><p class="muted">${hint}</p>
+    <h4>Total ${unitWord} used so far</h4>` +
+    tbl([['Item'], ['Unit'], ['Received', 1], ['Used', 1], ['In stock', 1], ['Price / unit', 1], ['Cost of what was used', 1]],
+      Object.entries(it).map(([k, x]) => [esc(k), esc(x.unit), num(x.rec), '<b>' + num(x.used) + '</b>', num(x.rec - x.used), money(x.price), money(x.cost)]), 'Nothing recorded yet. Press the green button above.') +
+    '<h4>Daily record</h4>' +
+    tbl([['Date'], ['Day', 1], ['Item'], ['Received', 1], ['Used', 1], ['Stock', 1], ['Price', 1], ['Cost used', 1], ['Expiry'], ['Notes'], ['']],
+      rows.slice().reverse().map(r => [r.log_date, r.day, esc(r.item), num(r.qty_received), '<b>' + num(r.qty_used) + '</b>', num(r.stock), money(r.unit_price), money(r.cost), r.expiry_date || '', esc(r.notes), delBtn('poultry_supply_log', r.id)]));
+}
+
+const GUIDE = `<details style="margin-bottom:12px"><summary><b>❓ Where do I record things? (click to open)</b></summary>
+  <div class="tw"><table><thead><tr><th>What happened</th><th>Go to this tab</th><th>Press</th></tr></thead><tbody>
+  <tr><td>Feed delivered, or bags used today</td><td>Feed Log</td><td>+ Record feed</td></tr>
+  <tr><td>Charcoal bags received or used</td><td>Charcoal Log</td><td>+ Record received / used</td></tr>
+  <tr><td>Vitamins, electrolytes, Stresmix, Colexcil…</td><td>Medication Log</td><td>+ Record received / used</td></tr>
+  <tr><td>Vaccines and drugs</td><td>Drugs Log</td><td>+ Record received / used</td></tr>
+  <tr><td>Birds found dead (day / night)</td><td>Mortality Log</td><td>+ Record deaths</td></tr>
+  <tr><td>Weekly weighing of birds</td><td>Weights & FCR</td><td>+ Record weighing</td></tr>
+  <tr><td>Diesel, fuel, labour, electricity, curtains, transport</td><td>Setup & Prices (section 6)</td><td>+ Add cost</td></tr>
+  <tr><td>Change a feed ingredient price or recipe</td><td>Feed formulation</td><td>+ Ingredient / Edit</td></tr>
+  <tr><td>Selling price, expected weight, chicks placed</td><td>Setup & Prices (section 1)</td><td>Edit batch details</td></tr>
+  <tr><td>See everything: used, costs, profit</td><td>Batch Summary (this page)</td><td></td></tr></tbody></table></div></details>`;
+
+
+function usedTable(C) {
+  const rows = [];
+  C.feedBy.forEach(x => rows.push(['Feed', esc(x.f.name), '<b>' + num(x.used) + '</b>', 'bags (' + num(x.kg) + ' kg)', money(x.cost)]));
+  const g = {};
+  C.supplies.forEach(s => { const k = s.category + '|' + s.item, x = g[k] = g[k] || { cat:s.category, item:s.item, unit:s.unit, used:0, cost:0 }; x.used += Number(s.qty_used); x.cost += s.cost; });
+  Object.values(g).forEach(x => rows.push([SUPCAT[x.cat], esc(x.item), '<b>' + num(x.used) + '</b>', esc(x.unit || ''), money(x.cost)]));
+  const fuel = C.costRows.filter(r => /diesel|fuel|petrol|paraffin/i.test(r.item));
+  rows.push(['Fuel', 'Diesel and fuel trips (from Setup & Prices)', '<b>' + num(sumBy(fuel.filter(r => /diesel/i.test(r.item)), r => r.quantity)) + '</b>', 'litres of diesel', money(sumBy(fuel, r => r.total))]);
+  const rest = C.costRows.filter(r => !fuel.includes(r));
+  rows.push(['Other', 'Labour, electricity, curtains, transport…', '', '', money(sumBy(rest, r => r.total))]);
+  return tbl([['Type'], ['Item'], ['Used', 1], ['Unit'], ['Cost', 1]], rows);
+}
+
 /* ---- tabs ---- */
 const BT = {
   summary(C) {
     const c = C.cost, b = C.b, w = C.lastW, tot = c.total || 1;
     const rows = [['Day-old chicks', c.chicks], ['Feed used', c.feed], ['Feed short supply', c.short], ['Medication', c.medication],
       ['Drugs & vaccines', c.drug], ['Charcoal / heating', c.charcoal], ['Other batch costs', c.other]];
-    return `<div class="kpis">${kp('Age', 'Day ' + C.age + ' <span class="muted" style="font-size:13px">of ' + b.target_days + '</span>')}${kp('Birds alive', num(C.alive) + ' <span class="muted" style="font-size:13px">of ' + num(C.init) + '</span>')}
+    return GUIDE + `<div class="kpis">${kp('Age', 'Day ' + C.age + ' <span class="muted" style="font-size:13px">of ' + b.target_days + '</span>')}${kp('Birds alive', num(C.alive) + ' <span class="muted" style="font-size:13px">of ' + num(C.init) + '</span>')}
       ${kp('Mortality', fmt1(C.dead / C.init * 100) + '% <span class="muted" style="font-size:13px">' + num(C.dead) + ' birds</span>')}
       ${kp('Night share of deaths', C.dead ? fmt1(C.nightDead / C.dead * 100) + '%' : '–')}
       ${kp('FCR (latest weighing)', w ? fmt1(w.fcr) + ' <span class="muted" style="font-size:13px">target ' + fmt1(w.tf) + '</span>' : '–', w && w.fcr > w.tf ? 'neg' : 'pos')}
@@ -1872,27 +1913,27 @@ const BT = {
       <h4>Expected result at ${b.expected_price ? money(b.expected_price) + ' per bird' : 'no price set'}</h4>
       ${tbl([['Measure'], ['Value', 1]], [['Expected revenue (birds alive × price)', money(C.expRev)], ['Expected profit', money(C.expProfit)],
         ['Break-even price per bird', money(C.perBird)], ['Cost per kg live weight' + (b.expected_weight_kg ? ' at ' + b.expected_weight_kg + ' kg' : ''), b.expected_weight_kg ? money(C.perKg) : 'Set expected weight']])}
+      <h4>Used so far (feed, charcoal, medicine, fuel)</h4>${usedTable(C)}
       <h4>Feed stock and cost</h4>${tbl([['Feed'], ['Bags received', 1], ['Bags used', 1], ['Stock (bags)', 1], ['Kg used', 1], ['Price/bag', 1], ['Cost used', 1], ['Short supply (bags)', 1], ['Short value', 1]],
         C.feedBy.map(x => [esc(x.f.name), num(x.rec), num(x.used), '<b>' + num(x.stock) + '</b>', num(x.kg), money(x.f.perBag), money(x.cost), num(x.short), money(x.shortVal)]))}`;
   },
   deaths(C) {
-    return `<div class="bar"><h4>Deaths (day and night)</h4>${addBtn('poultry_events', 'deaths', '+ Record deaths')}</div>` +
+    return `<div class="bar"><h4>Mortality Log — deaths by day and night</h4>${addBtn('poultry_events', 'deaths', '+ Record deaths')}</div>` +
       tbl([['Date'], ['Day of age', 1], ['Day', 1], ['Night', 1], ['Total', 1], ['Cumulative', 1], ['Alive', 1], ['Cumulative %', 1], ['']],
         C.deaths.slice().reverse().map(d => [d.date, d.n, d.day, d.night, '<b>' + d.total + '</b>', d.cum, num(d.alive), fmt1(d.pct) + '%', delBtn('poultry_events', d.date).replace('poultry_events:', 'deaths:')]), 'No deaths recorded.') +
       `<p class="muted">Culled or sold birds also reduce "alive". The × removes both day and night entries for that date.</p>`;
   },
   feed(C) {
-    return `<div class="bar"><h4>Feed deliveries and daily use</h4>${addBtn('poultry_feed_log', 'feed', '+ Record feed')}</div>` +
+    return `<div class="bar"><h4>Feed Log — deliveries, stock and daily use</h4>${addBtn('poultry_feed_log', 'feed', '+ Record feed')}</div>
+      <h4>Bags used so far</h4>` + tbl([['Feed'], ['Bags received', 1], ['Bags used', 1], ['In stock', 1], ['Kg used', 1], ['Cost of feed used', 1]],
+        C.feedBy.map(x => [esc(x.f.name), num(x.rec), '<b>' + num(x.used) + '</b>', num(x.stock), num(x.kg), money(x.cost)]), 'Add a feed formula first.') + '<h4>Daily record</h4>' +
       tbl([['Date'], ['Day', 1], ['Feed'], ['Invoiced', 1], ['Received', 1], ['Short', 1], ['Used', 1], ['Kg used', 1], ['Cost used', 1], ['Stock', 1], ['Count', 1], ['Variance', 1], ['Notes'], ['']],
         C.feed.slice().reverse().map(r => [r.log_date, r.day, esc(r.fname), num(r.bags_invoiced), num(r.bags_received), r.short ? `<span class="neg">${num(r.short)}</span>` : 0, num(r.bags_used), num(r.kg), money(r.cost),
           '<b>' + num(r.stock) + '</b>', r.physical_count == null ? '' : num(r.physical_count), r.variance == null ? '' : `<span class="${r.variance < 0 ? 'neg' : ''}">${num(r.variance)}</span>`, esc(r.notes), delBtn('poultry_feed_log', r.id)]));
   },
-  supplies(C) {
-    return `<div class="bar"><h4>Medication, drugs & vaccines, charcoal</h4>${addBtn('poultry_supply_log', 'supply', '+ Record stock / use')}</div>` +
-      tbl([['Date'], ['Day', 1], ['Type'], ['Item'], ['Unit'], ['Received', 1], ['Used', 1], ['Price', 1], ['Cost used', 1], ['Stock', 1], ['Expiry'], ['Notes'], ['']],
-        C.supplies.slice().reverse().map(r => [r.log_date, r.day, SUPCAT[r.category], esc(r.item), esc(r.unit), num(r.qty_received), num(r.qty_used), money(r.unit_price), money(r.cost),
-          '<b>' + num(r.stock) + '</b>', r.expiry_date || '', esc(r.notes), delBtn('poultry_supply_log', r.id)]));
-  },
+  medication(C) { return supplyTab(C, 'medication', 'Medication Log', 'Vitamins, electrolytes and supplements (Stresmix, Colexcil, ESb3, Virukill…). Record what you receive and what you use each day.', 'medication'); },
+  drug(C) { return supplyTab(C, 'drug', 'Drugs & Vaccines Log', 'Vaccines and drugs, with expiry date and batch number.', 'drugs and vaccines'); },
+  charcoal(C) { return supplyTab(C, 'charcoal', 'Charcoal / Heating Log', 'Bags of charcoal received on delivery days and bags used each day. The stock balance shows what is left.', 'charcoal'); },
   weights(C) {
     return `<div class="bar"><h4>Weekly weights and FCR</h4>${addBtn('poultry_weights', 'weight', '+ Record weighing')}</div>` +
       tbl([['Sample date'], ['Day', 1], ['Avg kg', 1], ['Target kg', 1], ['Birds alive', 1], ['Live weight kg', 1], ['Feed used kg', 1], ['FCR', 1], ['Target FCR', 1], ['vs target', 1], ['Feed efficiency', 1], ['']],
@@ -1900,14 +1941,26 @@ const BT = {
           w.fcr == null ? '' : `<span class="${w.fcr > w.tf ? 'neg' : 'pos'}">${w.fcr > w.tf ? '+' : ''}${fmt1(w.fcr - w.tf)}</span>`, w.eff == null ? '' : fmt1(w.eff) + '%', delBtn('poultry_weights', w.id)])) +
       `<p class="muted">FCR = feed used to date (kg) ÷ total live weight (kg). Lower is better. Weigh a sample of birds each week and enter the average.</p>`;
   },
-  costs(C) {
-    return `<div class="bar"><h4>Other batch costs</h4>${addBtn('poultry_costs', 'cost', '+ Add cost')}</div>` +
-      tbl([['Date'], ['Item'], ['Quantity', 1], ['Unit cost', 1], ['Total', 1], ['']], [...C.costRows.map(r => [r.cost_date, esc(r.item), num(r.quantity), money(r.unit_cost), money(r.total), delBtn('poultry_costs', r.id)]), ['', '<b>Total</b>', '', '', '<b>' + money(C.cost.other) + '</b>', '']]) +
-      '<p class="muted">Chicks, feed, medicine and charcoal are costed automatically from their own screens, so they are not entered here.</p>';
+  setup(C) {
+    const b = C.b, last = {};
+    C.supplies.forEach(s => last[s.category + '|' + s.item] = s);
+    return `<div class="bar"><h4>1. Batch details</h4>${can('poultry_batches') ? '<button class="btn small" data-add="settings">✎ Edit batch details</button>' : ''}</div>` +
+      tbl([['Detail'], ['Value']], [['Batch name / number', esc(b.batch_code)], ['House / location', esc(b.loc?.name || '–')], ['Placement date (day-old chicks arrived)', b.acquired_on],
+        ['Number of chicks placed', num(C.init)], ['Price per day-old chick', money(C.init ? b.acquisition_cost / C.init : 0)], ['Expected selling price per bird', b.expected_price ? money(b.expected_price) : 'not set'],
+        ['Expected average live weight at sale (kg)', b.expected_weight_kg || 'not set'], ['Target sale age (days)', b.target_days]]) +
+      `<h4>2. Feed prices</h4>` + tbl([['Feed type'], ['Bag weight (kg)', 1], ['Price per bag', 1]], C.F.map(f => [esc(f.name), num(f.bag_kg), '<b>' + money(f.perBag) + '</b>']), 'No feed formulas yet.') +
+      '<p class="muted">Feed prices come from the Feed formulation tab. Change an ingredient price there and the bag price updates.</p>' +
+      `<h4>3–5. Medication, drug and charcoal prices</h4>` + tbl([['Type'], ['Item'], ['Unit'], ['Price per unit', 1]],
+        Object.values(last).map(s => [SUPCAT[s.category], esc(s.item), esc(s.unit), money(s.unit_price)]), 'Prices appear here once you record items in the Medication, Drugs or Charcoal logs.') +
+      `<div class="bar"><h4>6. Other batch costs (fuel, labour, electricity, curtains…)</h4>${addBtn('poultry_costs', 'cost', '+ Add cost')}</div>` +
+      tbl([['Date'], ['Cost item'], ['Quantity', 1], ['Unit cost', 1], ['Total cost', 1], ['']],
+        [['', 'Day-old chicks', num(C.init), money(C.init ? b.acquisition_cost / C.init : 0), money(b.acquisition_cost), ''],
+         ...C.costRows.map(r => [r.cost_date, esc(r.item), num(r.quantity), money(r.unit_cost), money(r.total), delBtn('poultry_costs', r.id)]),
+         ['', '<b>TOTAL OTHER BATCH COSTS</b>', '', '', '<b>' + money(b.acquisition_cost + C.cost.other) + '</b>', '']]);
   },
   formulas(C) {
     const need = {}; C.F.forEach(f => f.items.forEach(i => { const n = need[i.ingredient] = need[i.ingredient] || { kg:0, cost:0 }; n.kg += i.kg; n.cost += i.cost; }));
-    return `<div class="bar"><h4>Feed formulation</h4>${addBtn('feed_formulas', 'formula', '+ New formula')}</div>` +
+    return `<div class="bar"><h4>Feed formulation — recipes and cost per bag</h4>${addBtn('feed_formulas', 'formula', '+ New formula')}</div>` +
       C.F.map(f => `<div class="card" style="margin-bottom:14px"><div class="bar"><b>${esc(f.name)}</b> <span class="muted">${esc(f.phase || '')} · ${num(f.plan_bags)} bags planned</span>
         <span>${addBtn('feed_formulas', 'ingredient:' + f.id, '+ Ingredient')} ${can('feed_formulas') ? `<button class="btn small ghost" data-add="editformula:${f.id}">Edit</button>` : ''}</span></div>` +
         tbl([['Ingredient'], ['kg / tonne', 1], ['Purchase unit'], ['Price / unit', 1], ['Cost / kg', 1], ['Cost / tonne', 1], ['Kg needed', 1], ['Units to buy', 1], ['Cost', 1], ['']],
@@ -1924,7 +1977,7 @@ const brDefaultFeed = (C, id) => (C.F.find(f => String(f.id) === String(id)) || 
 const ADD = {
   settings(C) { const b = C.b;
     formModal('Batch settings · ' + b.batch_code, [
-      { k:'acquisition_cost', l:'Cost of chicks (USD)', t:'number', v:b.acquisition_cost }, { k:'expected_price', l:'Expected selling price per bird', t:'number', v:b.expected_price },
+      { k:'acquisition_cost', l:'Total cost of day-old chicks (USD)', t:'number', v:b.acquisition_cost }, { k:'expected_price', l:'Expected selling price per bird', t:'number', v:b.expected_price },
       { k:'expected_weight_kg', l:'Expected live weight at sale (kg)', t:'number', v:b.expected_weight_kg }, { k:'target_days', l:'Target sale age (days)', t:'number', v:b.target_days }],
       v => sb.from('poultry_batches').update({ acquisition_cost:v.acquisition_cost || 0, expected_price:v.expected_price, expected_weight_kg:v.expected_weight_kg, target_days:v.target_days || 42 }).eq('id', b.id).then(r => r.error)); },
   deaths(C) { formModal('Record deaths · ' + C.b.batch_code, [{ k:'d', l:'Date', t:'date', v:today(), req:1 }, { k:'day', l:'Found dead — day', t:'number', v:0 },
@@ -1941,9 +1994,9 @@ const ADD = {
       if (v.used > stock + v.rec) return { message:`Only ${num(stock + v.rec)} bags are in stock` };
       return brIns('poultry_feed_log', { batch_id:C.b.id, log_date:v.d, formula_id:Number(v.f), bags_invoiced:v.inv || 0, bags_received:v.rec || 0, bags_used:v.used || 0,
         price_per_bag:brDefaultFeed(C, v.f), physical_count:v.cnt, notes:v.notes }); }); },
-  supply(C) { const items = [...new Set(C.supplies.map(s => s.item))];
+  supply(C, cat0) { const items = [...new Set(C.supplies.map(s => s.item))];
     formModal('Record medicine / drug / charcoal · ' + C.b.batch_code, [{ k:'d', l:'Date', t:'date', v:today(), req:1 },
-      { k:'cat', l:'Type', t:'select', o:Object.entries(SUPCAT), v:'medication' }, { k:'item', l:'Item', req:1, dl:items }, { k:'unit', l:'Unit (sachet, litre, bag…)' },
+      { k:'cat', l:'Type', t:'select', o:Object.entries(SUPCAT), v:cat0 || 'medication' }, { k:'item', l:'Item', req:1, dl:items }, { k:'unit', l:'Unit (sachet, litre, bag…)' },
       { k:'rec', l:'Quantity received', t:'number', v:0 }, { k:'used', l:'Quantity used', t:'number', v:0 }, { k:'price', l:'Price per unit (USD)', t:'number' },
       { k:'exp', l:'Expiry date (optional)', t:'date' }, { k:'notes', l:'Reason / administered by' }], v => {
       if (!(v.rec || v.used)) return { message:'Enter a quantity received or used' };
