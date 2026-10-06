@@ -194,6 +194,8 @@ const WRITE = {
   animals:['admin','manager','worker'], animal_events:['admin','manager','worker'],
   purchases:['admin','manager','accountant'], expenses:['admin','manager','accountant'],
   poultry_batches:['admin','manager','worker'], poultry_events:['admin','manager','worker'],
+  feed_formulas:['admin','manager'], feed_formula_items:['admin','manager'], poultry_feed_log:['admin','manager','worker'],
+  poultry_supply_log:['admin','manager','worker'], poultry_weights:['admin','manager','worker'], poultry_costs:['admin','manager','accountant'],
   production_records:['admin','manager','worker'], stock_movements:['admin','manager','worker','accountant']
 };
 const can = t => !!(WRITE[t] && state.profile && WRITE[t].includes(state.profile.role));
@@ -244,6 +246,7 @@ const PAGES = {
   dashboard: { title:'Dashboard', render: renderDashboard },
   livestock: { title:'Livestock', render: renderLivestock },
   poultry:   { title:'Poultry',   render: renderPoultry },
+  broiler:   { title:'Broiler cycle', render: renderBroiler },
   production:{ title:'Production',render: renderProduction },
   stock:     { title:'Stock',     render: renderStock },
   sales:     { title:'Sales',     render: renderSales },
@@ -261,7 +264,7 @@ function renderNav() {
   $('#side').innerHTML = `
     <h2>🌾 Kubatana KweVarimi Farm</h2>
     ${link('dashboard')}
-    <div class="sec">Farm</div>${link('livestock')}${link('poultry')}${link('production')}${link('stock')}
+    <div class="sec">Farm</div>${link('livestock')}${link('poultry')}${link('broiler')}${link('production')}${link('stock')}
     <div class="sec">Money</div>${link('sales')}${link('purchases')}${link('expenses')}
     <div class="sec">Setup</div>${link('products')}${link('customers')}${link('suppliers')}${link('locations')}
     ${state.profile.role === 'admin' ? `<div class="sec">Admin</div>${link('users')}` : ''}
@@ -1270,7 +1273,7 @@ function farmTiles(pb, pbs, sk, pr) {
    ============================================================ */
 const PTYPES = ['broiler', 'layer', 'chicken', 'other'];
 const PEV = { mortality:['💀', 'Deaths'], feed:['🌽', 'Feed given'], cull:['✂️', 'Culled / used'], other:['📝', 'Note'] };
-const refreshPoultry = () => { if (location.hash === '#poultry') renderPoultry(); };
+const refreshPoultry = () => { if (location.hash === '#poultry') renderPoultry(); else if (location.hash === '#broiler') renderBroiler(); };
 
 async function renderPoultry() {
   $('#main').innerHTML = `<div class="bar"><h2>Poultry</h2>
@@ -1716,6 +1719,253 @@ async function renderUsers() {
     $('.ua', tr).onchange = e => save(id, { active:e.target.checked });
   });
 }
+
+/* ============================================================
+   BROILER CYCLE — replaces the Excel batch workbook
+   (feed formulas, feed stock, deaths day/night, medicine & charcoal,
+    weekly weights and FCR, other costs, full batch cost summary)
+   ============================================================ */
+const BR = { id:null, tab:'summary', all:[], C:null };
+const D8 = s => new Date(s + 'T00:00:00');
+const dayOf = (start, d) => Math.round((D8(d) - D8(start)) / 864e5) + 1;
+const sumBy = (a, f) => a.reduce((s, x) => s + (Number(f(x)) || 0), 0);
+const SUPCAT = { medication:'Medication', drug:'Drugs & vaccines', charcoal:'Charcoal / heating' };
+
+/* every figure on the screen comes from this one function */
+function calcBroiler(R) {
+  const b = R.batch, init = Number(b.quantity_initial), start = b.acquired_on;
+  const F = R.formulas.map(f => {
+    const bagKg = Number(f.bag_kg), planKg = Number(f.plan_bags) * bagKg;
+    const items = R.items.filter(i => i.formula_id === f.id).map(i => {
+      const perKg = Number(i.unit_price) / Number(i.unit_kg), kg = Number(i.inclusion_kg_per_tonne) * planKg / 1000;
+      return { ...i, perKg, perTonne: perKg * Number(i.inclusion_kg_per_tonne), kg, units: kg / Number(i.unit_kg), cost: kg * perKg };
+    });
+    const perTonne = sumBy(items, i => i.perTonne) + Number(f.milling_per_tonne);
+    return { ...f, items, perTonne, perBag: perTonne * bagKg / 1000, incl: sumBy(items, i => i.inclusion_kg_per_tonne),
+             planCost: sumBy(items, i => i.cost) + Number(f.milling_per_tonne) * planKg / 1000 };
+  });
+  const fById = {}; F.forEach(f => fById[f.id] = f);
+  const bal = {};
+  const feed = R.feed.map(r => {
+    const f = fById[r.formula_id] || { name:'?', bag_kg:50 }, short = Math.max(Number(r.bags_invoiced) - Number(r.bags_received), 0);
+    bal[r.formula_id] = (bal[r.formula_id] || 0) + Number(r.bags_received) - Number(r.bags_used);
+    return { ...r, fname:f.name, day:dayOf(start, r.log_date), short, shortVal:short * Number(r.price_per_bag),
+             kg:Number(r.bags_used) * Number(f.bag_kg), cost:Number(r.bags_used) * Number(r.price_per_bag),
+             stock:bal[r.formula_id], variance:r.physical_count == null ? null : Number(r.physical_count) - bal[r.formula_id] };
+  });
+  const feedBy = F.map(f => { const rows = feed.filter(r => r.formula_id === f.id);
+    return { f, rec:sumBy(rows, r => r.bags_received), inv:sumBy(rows, r => r.bags_invoiced), used:sumBy(rows, r => r.bags_used), kg:sumBy(rows, r => r.kg),
+             cost:sumBy(rows, r => r.cost), short:sumBy(rows, r => r.short), shortVal:sumBy(rows, r => r.shortVal),
+             stock:sumBy(rows, r => r.bags_received) - sumBy(rows, r => r.bags_used) }; });
+  const mort = R.events.filter(e => e.event_type === 'mortality'), cull = sumBy(R.events.filter(e => e.event_type === 'cull'), e => e.quantity);
+  const sold = sumBy(R.sales, s => s.quantity);
+  const days = {}; mort.forEach(e => { const x = days[e.event_date] = days[e.event_date] || { date:e.event_date, day:0, night:0 };
+    if (e.shift === 'night') x.night += Number(e.quantity); else x.day += Number(e.quantity); });
+  let cum = 0;
+  const deaths = Object.values(days).sort((p, q) => p.date.localeCompare(q.date)).map(x => { cum += x.day + x.night;
+    return { ...x, n:dayOf(start, x.date), total:x.day + x.night, cum, alive:init - cum, pct:cum / init * 100 }; });
+  const dead = cum, nightDead = sumBy(mort.filter(e => e.shift === 'night'), e => e.quantity), alive = init - dead - cull - sold;
+  const sbal = {};
+  const supplies = R.supplies.map(r => { const k = r.category + '|' + r.item; sbal[k] = (sbal[k] || 0) + Number(r.qty_received) - Number(r.qty_used);
+    return { ...r, day:dayOf(start, r.log_date), cost:Number(r.qty_used) * Number(r.unit_price), stock:sbal[k] }; });
+  const goneBy = d => sumBy(R.events.filter(e => (e.event_type === 'mortality' || e.event_type === 'cull') && e.event_date <= d), e => e.quantity);
+  const weights = R.weights.map(w => { const n = dayOf(start, w.sample_date), alive_ = init - goneBy(w.sample_date);
+    const feedKg = sumBy(feed.filter(r => r.log_date <= w.sample_date), r => r.kg), live = alive_ * Number(w.avg_weight_kg);
+    const t = R.targets.slice().sort((p, q) => Math.abs(p.day - n) - Math.abs(q.day - n))[0] || {};
+    return { ...w, n, alive:alive_, live, feedKg, fcr:live ? feedKg / live : null, tw:t.target_weight_kg, tf:t.target_fcr,
+             eff:feedKg ? live / feedKg * 100 : null }; });
+  const other = sumBy(R.costs, c => c.total), cat = c => sumBy(supplies.filter(s => s.category === c), s => s.cost);
+  const cost = { chicks:Number(b.acquisition_cost), feed:sumBy(feed, r => r.cost), short:sumBy(feed, r => r.shortVal),
+                 medication:cat('medication'), drug:cat('drug'), charcoal:cat('charcoal'), other };
+  cost.total = Object.values(cost).reduce((a, v) => a + v, 0);
+  const expPrice = Number(b.expected_price) || 0, expKg = Number(b.expected_weight_kg) || 0;
+  return { b, F, feed, feedBy, deaths, dead, nightDead, cull, sold, alive, supplies, weights, cost, init,
+           feedKg:sumBy(feed, r => r.kg), age:Math.max(dayOf(start, today()), 1),
+           costRows:R.costs, expRev:alive * expPrice, expProfit:alive * expPrice - cost.total, perBird:alive ? cost.total / alive : 0,
+           perKg:alive && expKg ? cost.total / (alive * expKg) : 0, lastW:weights.filter(w => w.fcr).slice(-1)[0] };
+}
+
+async function loadBroiler(id) {
+  const q = (t, o) => sb.from(t).select('*').eq('batch_id', id).order(o).order('id');
+  const r = await Promise.all([
+    sb.from('poultry_batches').select('*').eq('id', id).single(), q('poultry_events', 'event_date'), q('poultry_feed_log', 'log_date'),
+    q('poultry_supply_log', 'log_date'), q('poultry_weights', 'sample_date'), q('poultry_costs', 'cost_date'),
+    sb.from('feed_formulas').select('*').order('id'), sb.from('feed_formula_items').select('*').order('id'),
+    sb.from('poultry_targets').select('*').order('day'), sb.from('sale_items').select('quantity,line_total').eq('batch_id', id)]);
+  const bad = r.find(x => x.error); if (bad) throw bad.error;
+  const [b, events, feed, supplies, weights, costs, formulas, items, targets, sales] = r.map(x => x.data);
+  return calcBroiler({ batch:b, events, feed, supplies, weights, costs, formulas, items, targets, sales });
+}
+
+async function renderBroiler() {
+  $('#main').innerHTML = '<div class="bar"><h2>Broiler cycle</h2><span id="brSel"></span></div><div id="brBody"><p class="muted">Loading…</p></div>';
+  const { data, error } = await sb.from('poultry_batches').select('id,batch_code,status').eq('poultry_type', 'broiler').order('acquired_on', { ascending:false });
+  if (error) return $('#brBody').innerHTML = `<p class="neg">${esc(error.message)}</p>`;
+  BR.all = data;
+  const newBtn = can('poultry_batches') ? '<button class="btn small" id="brNew">+ New batch</button>' : '';
+  if (!data.length) {
+    $('#brBody').innerHTML = `<p class="muted">No broiler batches yet. Create one to start the cycle. ${newBtn}</p>`;
+    if ($('#brNew')) $('#brNew').onclick = () => newBatch(data);
+    return;
+  }
+  if (!data.some(b => b.id === BR.id)) BR.id = (data.find(b => b.status === 'active') || data[0]).id;
+  $('#brSel').innerHTML = `<select id="brPick" style="max-width:210px">${data.map(b => `<option value="${b.id}" ${b.id === BR.id ? 'selected' : ''}>${esc(b.batch_code)}${b.status === 'closed' ? ' (closed)' : ''}</option>`).join('')}</select> ${newBtn}`;
+  $('#brPick').onchange = e => { BR.id = Number(e.target.value); drawBroiler(); };
+  if ($('#brNew')) $('#brNew').onclick = () => newBatch(data);
+  drawBroiler();
+}
+
+/* ---- small helpers ---- */
+const kp = (l, v, c) => `<div class="kpi"><div class="l">${l}</div><div class="v ${c || ''}">${v}</div></div>`;
+const tbl = (head, rows, empty) => `<div class="tw"><table><thead><tr>${head.map(h => `<th${h[1] ? ' class="n"' : ''}>${h[0]}</th>`).join('')}</tr></thead><tbody>${
+  rows.map(r => `<tr>${r.map((c, i) => `<td${head[i] && head[i][1] ? ' class="n"' : ''}>${c ?? ''}</td>`).join('')}</tr>`).join('') || `<tr><td colspan="${head.length}" class="muted">${empty || 'Nothing recorded yet.'}</td></tr>`}</tbody></table></div>`;
+const delBtn = (t, id) => can(t) ? `<button class="btn small ghost" data-del="${t}:${id}" title="Delete">×</button>` : '';
+const addBtn = (t, key, label) => can(t) ? `<button class="btn small" data-add="${key}">${label}</button>` : '';
+const fmt1 = v => v == null ? '–' : num(Math.round(v * 100) / 100);
+
+function formModal(title, fields, save) {
+  openModal(`<h3>${esc(title)}</h3><form id="fm"><div class="grid2">${fields.map(f => `<label>${esc(f.l)}${f.t === 'select'
+    ? `<select id="f_${f.k}">${f.o.map(o => `<option value="${esc(o[0])}">${esc(o[1])}</option>`).join('')}</select>`
+    : `<input id="f_${f.k}" type="${f.t || 'text'}" ${f.t === 'number' ? 'step="any" min="0"' : ''} value="${esc(f.v ?? '')}" ${f.req ? 'required' : ''} ${f.dl ? `list="dl_${f.k}"` : ''}>${f.dl ? `<datalist id="dl_${f.k}">${f.dl.map(x => `<option value="${esc(x)}">`).join('')}</datalist>` : ''}`}</label>`).join('')}</div>
+    <div class="actions"><button type="button" class="btn ghost" onclick="closeModal()">Cancel</button><button class="btn" id="fmSave">Save</button></div></form>`);
+  fields.filter(f => f.t === 'select' && f.v != null).forEach(f => $('#f_' + f.k).value = f.v);
+  $('#fm').onsubmit = async e => {
+    e.preventDefault();
+    const v = {}; fields.forEach(f => { const x = $('#f_' + f.k).value.trim(); v[f.k] = f.t === 'number' ? (x === '' ? null : Number(x)) : (x || null); });
+    $('#fmSave').disabled = true;
+    const err = await save(v);
+    if (err) { $('#fmSave').disabled = false; return toast(err.message || String(err), true); }
+    closeModal(); toast('Saved'); drawBroiler();
+  };
+}
+const brIns = (t, rows) => sb.from(t).insert(rows).then(r => r.error);
+
+async function drawBroiler() {
+  try { BR.C = await loadBroiler(BR.id); } catch (e) { return $('#brBody').innerHTML = `<p class="neg">${esc(e.message)}<br>Have you run broiler_migration.sql in Supabase?</p>`; }
+  const TABS = [['summary','Summary'],['deaths','Deaths'],['feed','Feed'],['supplies','Medicine & charcoal'],['weights','Weights & FCR'],['costs','Other costs'],['formulas','Feed formulas']];
+  $('#brBody').innerHTML = `<div class="row-actions" style="margin-bottom:10px">${TABS.map(t => `<button class="btn small ${BR.tab === t[0] ? '' : 'ghost'}" data-tab="${t[0]}">${t[1]}</button>`).join('')}
+    ${can('poultry_batches') ? '<button class="btn small ghost" data-add="settings">⚙ Batch settings</button>' : ''}</div><div id="brTab">${BT[BR.tab](BR.C)}</div>`;
+  $('#brBody').querySelectorAll('[data-tab]').forEach(x => x.onclick = () => { BR.tab = x.dataset.tab; drawBroiler(); });
+  $('#brBody').querySelectorAll('[data-add]').forEach(x => x.onclick = () => { const [k, a] = x.dataset.add.split(':'); ADD[k](BR.C, a); });
+  $('#brBody').querySelectorAll('[data-del]').forEach(x => x.onclick = async () => {
+    const [t, id] = x.dataset.del.split(':'); if (!confirm('Delete this entry?')) return;
+    const { error } = t === 'deaths' ? await sb.from('poultry_events').delete().eq('batch_id', BR.id).eq('event_type', 'mortality').eq('event_date', id)
+                                      : await sb.from(t).delete().eq('id', id);
+    if (error) return toast(error.message, true);
+    toast('Deleted'); drawBroiler(); });
+}
+
+/* ---- tabs ---- */
+const BT = {
+  summary(C) {
+    const c = C.cost, b = C.b, w = C.lastW, tot = c.total || 1;
+    const rows = [['Day-old chicks', c.chicks], ['Feed used', c.feed], ['Feed short supply', c.short], ['Medication', c.medication],
+      ['Drugs & vaccines', c.drug], ['Charcoal / heating', c.charcoal], ['Other batch costs', c.other]];
+    return `<div class="kpis">${kp('Age', 'Day ' + C.age + ' <span class="muted" style="font-size:13px">of ' + b.target_days + '</span>')}${kp('Birds alive', num(C.alive) + ' <span class="muted" style="font-size:13px">of ' + num(C.init) + '</span>')}
+      ${kp('Mortality', fmt1(C.dead / C.init * 100) + '% <span class="muted" style="font-size:13px">' + num(C.dead) + ' birds</span>')}
+      ${kp('Night share of deaths', C.dead ? fmt1(C.nightDead / C.dead * 100) + '%' : '–')}
+      ${kp('FCR (latest weighing)', w ? fmt1(w.fcr) + ' <span class="muted" style="font-size:13px">target ' + fmt1(w.tf) + '</span>' : '–', w && w.fcr > w.tf ? 'neg' : 'pos')}
+      ${kp('Feed used', num(C.feedKg) + ' kg')}${kp('Feed per bird alive', C.alive ? fmt1(C.feedKg / C.alive) + ' kg' : '–')}
+      ${kp('Total cost so far', money(c.total))}${kp('Cost per bird', money(C.perBird))}
+      ${kp('Expected profit', b.expected_price ? money(C.expProfit) : 'Set price', C.expProfit < 0 ? 'neg' : 'pos')}</div>
+      <h4>Batch cost</h4>${tbl([['Item'], ['Amount', 1], ['Share', 1]], [...rows.map(r => [r[0], money(r[1]), fmt1(r[1] / tot * 100) + '%']), ['<b>Total</b>', '<b>' + money(c.total) + '</b>', '']])}
+      <h4>Expected result at ${b.expected_price ? money(b.expected_price) + ' per bird' : 'no price set'}</h4>
+      ${tbl([['Measure'], ['Value', 1]], [['Expected revenue (birds alive × price)', money(C.expRev)], ['Expected profit', money(C.expProfit)],
+        ['Break-even price per bird', money(C.perBird)], ['Cost per kg live weight' + (b.expected_weight_kg ? ' at ' + b.expected_weight_kg + ' kg' : ''), b.expected_weight_kg ? money(C.perKg) : 'Set expected weight']])}
+      <h4>Feed stock and cost</h4>${tbl([['Feed'], ['Bags received', 1], ['Bags used', 1], ['Stock (bags)', 1], ['Kg used', 1], ['Price/bag', 1], ['Cost used', 1], ['Short supply (bags)', 1], ['Short value', 1]],
+        C.feedBy.map(x => [esc(x.f.name), num(x.rec), num(x.used), '<b>' + num(x.stock) + '</b>', num(x.kg), money(x.f.perBag), money(x.cost), num(x.short), money(x.shortVal)]))}`;
+  },
+  deaths(C) {
+    return `<div class="bar"><h4>Deaths (day and night)</h4>${addBtn('poultry_events', 'deaths', '+ Record deaths')}</div>` +
+      tbl([['Date'], ['Day of age', 1], ['Day', 1], ['Night', 1], ['Total', 1], ['Cumulative', 1], ['Alive', 1], ['Cumulative %', 1], ['']],
+        C.deaths.slice().reverse().map(d => [d.date, d.n, d.day, d.night, '<b>' + d.total + '</b>', d.cum, num(d.alive), fmt1(d.pct) + '%', delBtn('poultry_events', d.date).replace('poultry_events:', 'deaths:')]), 'No deaths recorded.') +
+      `<p class="muted">Culled or sold birds also reduce "alive". The × removes both day and night entries for that date.</p>`;
+  },
+  feed(C) {
+    return `<div class="bar"><h4>Feed deliveries and daily use</h4>${addBtn('poultry_feed_log', 'feed', '+ Record feed')}</div>` +
+      tbl([['Date'], ['Day', 1], ['Feed'], ['Invoiced', 1], ['Received', 1], ['Short', 1], ['Used', 1], ['Kg used', 1], ['Cost used', 1], ['Stock', 1], ['Count', 1], ['Variance', 1], ['Notes'], ['']],
+        C.feed.slice().reverse().map(r => [r.log_date, r.day, esc(r.fname), num(r.bags_invoiced), num(r.bags_received), r.short ? `<span class="neg">${num(r.short)}</span>` : 0, num(r.bags_used), num(r.kg), money(r.cost),
+          '<b>' + num(r.stock) + '</b>', r.physical_count == null ? '' : num(r.physical_count), r.variance == null ? '' : `<span class="${r.variance < 0 ? 'neg' : ''}">${num(r.variance)}</span>`, esc(r.notes), delBtn('poultry_feed_log', r.id)]));
+  },
+  supplies(C) {
+    return `<div class="bar"><h4>Medication, drugs & vaccines, charcoal</h4>${addBtn('poultry_supply_log', 'supply', '+ Record stock / use')}</div>` +
+      tbl([['Date'], ['Day', 1], ['Type'], ['Item'], ['Unit'], ['Received', 1], ['Used', 1], ['Price', 1], ['Cost used', 1], ['Stock', 1], ['Expiry'], ['Notes'], ['']],
+        C.supplies.slice().reverse().map(r => [r.log_date, r.day, SUPCAT[r.category], esc(r.item), esc(r.unit), num(r.qty_received), num(r.qty_used), money(r.unit_price), money(r.cost),
+          '<b>' + num(r.stock) + '</b>', r.expiry_date || '', esc(r.notes), delBtn('poultry_supply_log', r.id)]));
+  },
+  weights(C) {
+    return `<div class="bar"><h4>Weekly weights and FCR</h4>${addBtn('poultry_weights', 'weight', '+ Record weighing')}</div>` +
+      tbl([['Sample date'], ['Day', 1], ['Avg kg', 1], ['Target kg', 1], ['Birds alive', 1], ['Live weight kg', 1], ['Feed used kg', 1], ['FCR', 1], ['Target FCR', 1], ['vs target', 1], ['Feed efficiency', 1], ['']],
+        C.weights.slice().reverse().map(w => [w.sample_date, w.n, num(w.avg_weight_kg), fmt1(w.tw), num(w.alive), num(w.live), num(w.feedKg), '<b>' + fmt1(w.fcr) + '</b>', fmt1(w.tf),
+          w.fcr == null ? '' : `<span class="${w.fcr > w.tf ? 'neg' : 'pos'}">${w.fcr > w.tf ? '+' : ''}${fmt1(w.fcr - w.tf)}</span>`, w.eff == null ? '' : fmt1(w.eff) + '%', delBtn('poultry_weights', w.id)])) +
+      `<p class="muted">FCR = feed used to date (kg) ÷ total live weight (kg). Lower is better. Weigh a sample of birds each week and enter the average.</p>`;
+  },
+  costs(C) {
+    return `<div class="bar"><h4>Other batch costs</h4>${addBtn('poultry_costs', 'cost', '+ Add cost')}</div>` +
+      tbl([['Date'], ['Item'], ['Quantity', 1], ['Unit cost', 1], ['Total', 1], ['']], [...C.costRows.map(r => [r.cost_date, esc(r.item), num(r.quantity), money(r.unit_cost), money(r.total), delBtn('poultry_costs', r.id)]), ['', '<b>Total</b>', '', '', '<b>' + money(C.cost.other) + '</b>', '']]) +
+      '<p class="muted">Chicks, feed, medicine and charcoal are costed automatically from their own screens, so they are not entered here.</p>';
+  },
+  formulas(C) {
+    const need = {}; C.F.forEach(f => f.items.forEach(i => { const n = need[i.ingredient] = need[i.ingredient] || { kg:0, cost:0 }; n.kg += i.kg; n.cost += i.cost; }));
+    return `<div class="bar"><h4>Feed formulation</h4>${addBtn('feed_formulas', 'formula', '+ New formula')}</div>` +
+      C.F.map(f => `<div class="card" style="margin-bottom:14px"><div class="bar"><b>${esc(f.name)}</b> <span class="muted">${esc(f.phase || '')} · ${num(f.plan_bags)} bags planned</span>
+        <span>${addBtn('feed_formulas', 'ingredient:' + f.id, '+ Ingredient')} ${can('feed_formulas') ? `<button class="btn small ghost" data-add="editformula:${f.id}">Edit</button>` : ''}</span></div>` +
+        tbl([['Ingredient'], ['kg / tonne', 1], ['Purchase unit'], ['Price / unit', 1], ['Cost / kg', 1], ['Cost / tonne', 1], ['Kg needed', 1], ['Units to buy', 1], ['Cost', 1], ['']],
+          [...f.items.map(i => [esc(i.ingredient), num(i.inclusion_kg_per_tonne), esc(i.unit_label), money(i.unit_price), money(i.perKg), money(i.perTonne), num(i.kg), num(i.units), money(i.cost), delBtn('feed_formula_items', i.id)]),
+           [`<b>Total</b>`, `<b class="${Math.abs(f.incl - 1000) > 0.01 ? 'neg' : ''}">${num(f.incl)}</b>`, Math.abs(f.incl - 1000) > 0.01 ? '<span class="neg">must add up to 1000</span>' : '✓ 1000 kg', '', '', '<b>' + money(f.perTonne) + '</b>', '', '', '<b>' + money(f.planCost) + '</b>', '']]) +
+        `<p>Cost per kg <b>${money(f.perTonne / 1000)}</b> · cost per ${num(f.bag_kg)} kg bag <b>${money(f.perBag)}</b>${Number(f.milling_per_tonne) ? ' · milling ' + money(f.milling_per_tonne) + '/tonne' : ''}</p></div>`).join('') +
+      '<h4>Ingredients to buy — whole cycle</h4>' + tbl([['Ingredient'], ['Kg', 1], ['Tonnes', 1], ['Cost', 1]], [...Object.entries(need).map(([k, v]) => [esc(k), num(v.kg), num(v.kg / 1000), money(v.cost)]),
+        ['<b>Total</b>', '<b>' + num(sumBy(Object.values(need), v => v.kg)) + '</b>', '', '<b>' + money(sumBy(Object.values(need), v => v.cost)) + '</b>']]);
+  }
+};
+
+/* ---- add / edit forms ---- */
+const brDefaultFeed = (C, id) => (C.F.find(f => String(f.id) === String(id)) || {}).perBag || 0;
+const ADD = {
+  settings(C) { const b = C.b;
+    formModal('Batch settings · ' + b.batch_code, [
+      { k:'acquisition_cost', l:'Cost of chicks (USD)', t:'number', v:b.acquisition_cost }, { k:'expected_price', l:'Expected selling price per bird', t:'number', v:b.expected_price },
+      { k:'expected_weight_kg', l:'Expected live weight at sale (kg)', t:'number', v:b.expected_weight_kg }, { k:'target_days', l:'Target sale age (days)', t:'number', v:b.target_days }],
+      v => sb.from('poultry_batches').update({ acquisition_cost:v.acquisition_cost || 0, expected_price:v.expected_price, expected_weight_kg:v.expected_weight_kg, target_days:v.target_days || 42 }).eq('id', b.id).then(r => r.error)); },
+  deaths(C) { formModal('Record deaths · ' + C.b.batch_code, [{ k:'d', l:'Date', t:'date', v:today(), req:1 }, { k:'day', l:'Found dead — day', t:'number', v:0 },
+      { k:'night', l:'Found dead — night', t:'number', v:0 }, { k:'notes', l:'Cause / notes' }], v => {
+      if (!(v.day > 0 || v.night > 0)) return { message:'Enter the number of birds' };
+      if (v.day + v.night > C.alive) return { message:`Only ${C.alive} birds are alive` };
+      return brIns('poultry_events', [['day', v.day], ['night', v.night]].filter(x => x[1] > 0).map(x => ({ batch_id:C.b.id, event_type:'mortality', event_date:v.d, quantity:x[1], shift:x[0], notes:v.notes }))); }); },
+  feed(C) { const f0 = C.F[0]; if (!f0) return toast('Add a feed formula first (Feed formulas tab)', true);
+    formModal('Record feed · ' + C.b.batch_code, [{ k:'d', l:'Date', t:'date', v:today(), req:1 }, { k:'f', l:'Feed', t:'select', o:C.F.map(f => [f.id, f.name]), v:f0.id },
+      { k:'inv', l:'Bags invoiced / dispatched', t:'number', v:0 }, { k:'rec', l:'Bags actually received', t:'number', v:0 }, { k:'used', l:'Bags used today', t:'number', v:0 },
+      { k:'cnt', l:'Physical count of bags (optional)', t:'number' }, { k:'notes', l:'Supplier / GRN no. / notes' }], v => {
+      if (!(v.inv || v.rec || v.used)) return { message:'Enter bags delivered or used' };
+      const stock = (C.feedBy.find(x => String(x.f.id) === String(v.f)) || {}).stock || 0;
+      if (v.used > stock + v.rec) return { message:`Only ${num(stock + v.rec)} bags are in stock` };
+      return brIns('poultry_feed_log', { batch_id:C.b.id, log_date:v.d, formula_id:Number(v.f), bags_invoiced:v.inv || 0, bags_received:v.rec || 0, bags_used:v.used || 0,
+        price_per_bag:brDefaultFeed(C, v.f), physical_count:v.cnt, notes:v.notes }); }); },
+  supply(C) { const items = [...new Set(C.supplies.map(s => s.item))];
+    formModal('Record medicine / drug / charcoal · ' + C.b.batch_code, [{ k:'d', l:'Date', t:'date', v:today(), req:1 },
+      { k:'cat', l:'Type', t:'select', o:Object.entries(SUPCAT), v:'medication' }, { k:'item', l:'Item', req:1, dl:items }, { k:'unit', l:'Unit (sachet, litre, bag…)' },
+      { k:'rec', l:'Quantity received', t:'number', v:0 }, { k:'used', l:'Quantity used', t:'number', v:0 }, { k:'price', l:'Price per unit (USD)', t:'number' },
+      { k:'exp', l:'Expiry date (optional)', t:'date' }, { k:'notes', l:'Reason / administered by' }], v => {
+      if (!(v.rec || v.used)) return { message:'Enter a quantity received or used' };
+      const last = C.supplies.filter(s => s.item === v.item && s.category === v.cat).slice(-1)[0] || {};
+      const stock = last.stock || 0; if (v.used > stock + v.rec) return { message:`Only ${num(stock + v.rec)} in stock` };
+      return brIns('poultry_supply_log', { batch_id:C.b.id, log_date:v.d, category:v.cat, item:v.item, unit:v.unit || last.unit || null, qty_received:v.rec || 0, qty_used:v.used || 0,
+        unit_price:v.price ?? last.unit_price ?? 0, expiry_date:v.exp, notes:v.notes }); }); },
+  weight(C) { formModal('Record weighing · ' + C.b.batch_code, [{ k:'d', l:'Sample date', t:'date', v:today(), req:1 }, { k:'w', l:'Average weight of sample (kg)', t:'number', req:1 }],
+      v => v.w > 0 ? brIns('poultry_weights', { batch_id:C.b.id, sample_date:v.d, avg_weight_kg:v.w }) : { message:'Enter the average weight' }); },
+  cost(C) { formModal('Add batch cost · ' + C.b.batch_code, [{ k:'d', l:'Date', t:'date', v:today(), req:1 }, { k:'item', l:'Cost item (labour, diesel…)', req:1 },
+      { k:'q', l:'Quantity', t:'number', v:1 }, { k:'u', l:'Unit cost (USD)', t:'number', req:1 }],
+      v => brIns('poultry_costs', { batch_id:C.b.id, cost_date:v.d, item:v.item, quantity:v.q || 1, unit_cost:v.u })); },
+  formula(C) { formModal('New feed formula', [{ k:'name', l:'Name (e.g. Broiler Starter)', req:1 }, { k:'phase', l:'Phase (e.g. Days 0-14)' }, { k:'bag', l:'Bag weight (kg)', t:'number', v:50 },
+      { k:'plan', l:'Bags to produce per cycle', t:'number', v:0 }, { k:'mill', l:'Milling / mixing cost per tonne', t:'number', v:0 }],
+      v => brIns('feed_formulas', { name:v.name, phase:v.phase, bag_kg:v.bag || 50, plan_bags:v.plan || 0, milling_per_tonne:v.mill || 0 })); },
+  async 'editformula'(C, id) { const f = C.F.find(x => String(x.id) === String(id));
+    formModal('Edit ' + f.name, [{ k:'phase', l:'Phase', v:f.phase }, { k:'bag', l:'Bag weight (kg)', t:'number', v:f.bag_kg }, { k:'plan', l:'Bags to produce per cycle', t:'number', v:f.plan_bags }, { k:'mill', l:'Milling cost per tonne', t:'number', v:f.milling_per_tonne }],
+      v => sb.from('feed_formulas').update({ phase:v.phase, bag_kg:v.bag || 50, plan_bags:v.plan || 0, milling_per_tonne:v.mill || 0 }).eq('id', f.id).then(r => r.error)); },
+  async 'ingredient'(C, id) { formModal('Add ingredient', [{ k:'ing', l:'Ingredient', req:1, dl:[...new Set(C.F.flatMap(f => f.items.map(i => i.ingredient)))] }, { k:'inc', l:'Inclusion (kg per tonne of feed)', t:'number', req:1 },
+      { k:'ul', l:'Purchase unit (50kg bag…)' }, { k:'ukg', l:'Unit size (kg)', t:'number', v:50 }, { k:'up', l:'Price per unit (USD)', t:'number', req:1 }],
+      v => v.inc > 0 ? brIns('feed_formula_items', { formula_id:Number(id), ingredient:v.ing, inclusion_kg_per_tonne:v.inc, unit_label:v.ul, unit_kg:v.ukg || 1, unit_price:v.up }) : { message:'Enter the inclusion' }); }
+};
 
 /* start the login-page network */
 startNetwork($('#netLogin'), { icons:9, density:12000 });
