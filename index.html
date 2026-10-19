@@ -1,10 +1,13 @@
 <!doctype html>
 <html lang="en">
 <head>
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src https://zguehiwosvbmwgglvdsc.supabase.co wss://zguehiwosvbmwgglvdsc.supabase.co; object-src 'none'; base-uri 'self'; form-action 'self'">
+<meta name="referrer" content="no-referrer">
+
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Kubatana KweVarimi Farm</title>
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
 <style>
   :root{
     --green:#2f6b3a; --green-d:#234f2b; --bg:#f4f6f3; --card:#fff; --line:#dfe5dc;
@@ -128,7 +131,7 @@
     <div class="hero">
       <div class="logo">🌾</div>
       <h1>Kubatana KweVarimi Farm</h1>
-      <p>Livestock · Poultry · Milk · Meat · Eggs, all connected in one place</p>
+      <p>Livestock · Poultry · Hatchery · Meat · Eggs, all connected in one place</p>
     </div>
     <div class="box">
   <h3>Sign in</h3>
@@ -137,7 +140,6 @@
     <label>Password<input type="password" id="lPass" required minlength="6" autocomplete="current-password"></label>
     <div class="row">
       <button class="btn" type="submit">Sign in</button>
-      <button class="btn ghost" type="button" id="signupBtn">Create account</button>
     </div>
   </form>
     </div>
@@ -173,7 +175,7 @@ const money = n => new Intl.NumberFormat('en-US', {style:'currency', currency:'U
 const num = n => new Intl.NumberFormat('en-US', {maximumFractionDigits:2}).format(Number(n) || 0);
 const cap = s => s ? s.charAt(0).toUpperCase() + s.slice(1).replace(/_/g, ' ') : '';
 const today = () => new Date().toISOString().slice(0, 10);
-const LINES = ['livestock','meat','milk','poultry','eggs','other'];
+const LINES = ['livestock','meat','poultry','eggs','other'];
 const METHODS = ['cash','bank','mobile_money','other'];
 const state = { user:null, profile:null };
 
@@ -196,6 +198,7 @@ const WRITE = {
   poultry_batches:['admin','manager','worker'], poultry_events:['admin','manager','worker'],
   feed_formulas:['admin','manager'], feed_formula_items:['admin','manager'], poultry_feed_log:['admin','manager','worker'],
   poultry_supply_log:['admin','manager','worker'], poultry_weights:['admin','manager','worker'], poultry_costs:['admin','manager','accountant'],
+  incubation_batches:['admin','manager','worker'], incubation_events:['admin','manager','worker'], incubation_costs:['admin','manager','accountant'], chick_sales:['admin','manager','accountant'],
   production_records:['admin','manager','worker'], stock_movements:['admin','manager','worker','accountant']
 };
 const can = t => !!(WRITE[t] && state.profile && WRITE[t].includes(state.profile.role));
@@ -208,13 +211,7 @@ $('#loginForm').addEventListener('submit', async e => {
   const { error } = await sb.auth.signInWithPassword({ email:$('#lEmail').value.trim(), password:$('#lPass').value });
   if (error) toast(error.message, true);
 });
-$('#signupBtn').addEventListener('click', async () => {
-  const email = $('#lEmail').value.trim(), password = $('#lPass').value;
-  if (!email || password.length < 6) return toast('Enter an email and a password of 6+ characters', true);
-  const { data, error } = await sb.auth.signUp({ email, password });
-  if (error) return toast(error.message, true);
-  if (!data.session) toast('Account created. Check your email to confirm, then sign in.');
-});
+/* Accounts are created by an administrator only (Users screen). There is no public sign-up. */
 
 async function enter(user) {
   const { data, error } = await sb.from('profiles').select('*').eq('id', user.id).single();
@@ -247,6 +244,9 @@ const PAGES = {
   livestock: { title:'Livestock', render: renderLivestock },
   poultry:   { title:'Poultry',   render: renderPoultry },
   broiler:   { title:'Broiler cycle', render: renderBroiler },
+  incubation:{ title:'Incubation & chicks', render: renderIncubation },
+  overview:  { title:'Livestock overview', render: renderOverview },
+  reports:   { title:'Reports', render: renderReports },
   production:{ title:'Production',render: renderProduction },
   stock:     { title:'Stock',     render: renderStock },
   sales:     { title:'Sales',     render: renderSales },
@@ -264,9 +264,9 @@ function renderNav() {
   $('#side').innerHTML = `
     <h2>🌾 Kubatana KweVarimi Farm</h2>
     ${link('dashboard')}
-    <div class="sec">Farm</div>${link('livestock')}${link('poultry')}${link('broiler')}${link('production')}${link('stock')}
-    <div class="sec">Money</div>${link('sales')}${link('purchases')}${link('expenses')}
-    <div class="sec">Setup</div>${link('products')}${link('customers')}${link('suppliers')}${link('locations')}
+    <div class="sec">Farm</div>${link('overview')}${link('livestock')}${link('poultry')}${link('broiler')}${link('incubation')}${link('production')}${link('stock')}
+    ${state.profile.role !== 'worker' ? `<div class="sec">Money</div>${link('sales')}${link('purchases')}${link('expenses')}${link('reports')}` : ''}
+    <div class="sec">Setup</div>${link('products')}${state.profile.role !== 'worker' ? `${link('customers')}${link('suppliers')}` : ''}${link('locations')}
     ${state.profile.role === 'admin' ? `<div class="sec">Admin</div>${link('users')}` : ''}
     <div class="me">${esc(state.profile.full_name || state.user.email)}<br><span class="tag">${esc(state.profile.role)}</span>
       <button class="btn small ghost" id="logout" style="color:#fff;border-color:#fff">Sign out</button></div>`;
@@ -1254,7 +1254,7 @@ async function newExpense() {
 }
 
 /* ============================================================
-   13. DASHBOARD FARM TILES (birds, milk, eggs, meat, stock)
+   13. DASHBOARD FARM TILES (birds, eggs, meat, stock)
    ============================================================ */
 function farmTiles(pb, pbs, sk, pr) {
   const act = new Set((pbs || []).filter(b => b.status === 'active').map(b => b.id));
@@ -1263,7 +1263,7 @@ function farmTiles(pb, pbs, sk, pr) {
   const value = (sk || []).reduce((a, s) => a + Math.max(Number(s.quantity_on_hand), 0) * Number(s.avg_unit_cost || 0), 0);
   const low = (sk || []).filter(s => s.low_stock).length;
   const t = (g, e, c, s) => `<div class="tile" data-go="${g}"><div class="e">${e}</div><div class="c">${c}</div><div class="s">${s}</div></div>`;
-  return `<div class="tiles">${t('poultry', '🐔', num(birds), 'birds on farm')}${t('production', '🥛', num(sum('milk')), 'litres milk')}
+  return `<div class="tiles">${t('poultry', '🐔', num(birds), 'birds on farm')}
     ${t('production', '🥚', num(sum('eggs')), 'trays eggs')}${t('production', '🥩', num(sum('meat')), 'kg meat')}
     ${t('stock', '📦', money(value), 'stock value' + (low ? ' · ' + low + ' low' : ''))}</div>`;
 }
@@ -1480,9 +1480,9 @@ async function sellBirds(b, s) {
 }
 
 /* ============================================================
-   15. PRODUCTION (milk, eggs, meat, other)
+   15. PRODUCTION (eggs, meat, other)
    ============================================================ */
-const PL = { milk:['🥛', 'Milk'], eggs:['🥚', 'Eggs'], meat:['🥩', 'Meat'], other:['📦', 'Other'] };
+const PL = { eggs:['🥚', 'Eggs'], meat:['🥩', 'Meat'], other:['📦', 'Other'] };
 const prodState = { line:'', period:'month' };
 
 async function renderProduction() {
@@ -1516,7 +1516,7 @@ async function renderProduction() {
       ${data.map(r => { const m = PL[r.business_line] || ['📦', cap(r.business_line)], uc = Number(r.quantity) ? (Number(r.input_cost || 0) + Number(r.processing_cost || 0)) / Number(r.quantity) : 0;
         return `<tr title="${esc(r.notes || '')}"><td>${esc(r.production_date)}</td><td>${m[0]} ${m[1]}</td><td>${esc(r.products?.name)}</td><td>${esc(r.animals?.tag || r.poultry_batches?.batch_code || '')}</td>
         <td class="n">${num(r.quantity)} ${esc(r.products?.unit)}</td><td class="n">${num(r.quantity_lost)}</td><td class="n">${uc ? money(uc) : '–'}</td><td>${esc(r.loc?.name || '')}</td></tr>`; }).join('')
-        || '<tr><td colspan="8" class="muted">Nothing recorded for this selection. Use "Record production" to add milk, eggs or meat.</td></tr>'}</tbody></table></div>`;
+        || '<tr><td colspan="8" class="muted">Nothing recorded for this selection. Use "Record production" to add eggs or meat.</td></tr>'}</tbody></table></div>`;
   };
   $('#pl').onchange = e => { prodState.line = e.target.value; load(); };
   $('#pp').onchange = e => { prodState.period = e.target.value; load(); };
@@ -1556,10 +1556,10 @@ async function newProduction() {
   };
   const sync = () => {
     const L = $('#pr_line').value;
-    show('an_l', L === 'milk' || L === 'meat'); show('bt_l', L === 'eggs'); show('cw_l', L === 'meat');
+    show('an_l', L === 'meat'); show('bt_l', L === 'eggs'); show('cw_l', L === 'meat');
     show('lost_l', L !== 'meat'); show('pc_l', L === 'meat');
-    $('#an_t').textContent = L === 'meat' ? 'Animal slaughtered' : 'Animal milked (optional)';
-    $('#q_t').textContent = { milk:'Litres produced', eggs:'Trays collected', meat:'Finished meat (kg)', other:'Quantity produced' }[L];
+    $('#an_t').textContent = 'Animal slaughtered';
+    $('#q_t').textContent = { eggs:'Trays collected', meat:'Finished meat (kg)', other:'Quantity produced' }[L];
     $('#ic_t').textContent = L === 'meat' ? 'Live animal cost (USD)' : 'Production cost (USD, optional)';
     $('#pr_prod').innerHTML = pr.data.filter(p => L === 'other' ? ['poultry', 'other'].includes(p.business_line) : p.business_line === L)
       .map(p => `<option value="${p.id}" data-track="${p.track_stock ? 1 : 0}" data-line="${p.business_line}">${esc(p.name)} (${esc(p.unit)})</option>`).join('');
@@ -1584,7 +1584,7 @@ async function newProduction() {
     $('#prSave').disabled = true;
     const { error } = await sb.from('production_records').insert({
       production_date:$('#pr_date').value, business_line:L === 'other' ? o.dataset.line : L, product_id:Number(o.value),
-      animal_id:(L === 'milk' || L === 'meat') && $('#pr_an').value ? Number($('#pr_an').value) : null,
+      animal_id:L === 'meat' && $('#pr_an').value ? Number($('#pr_an').value) : null,
       batch_id:L === 'eggs' && $('#pr_bt').value ? Number($('#pr_bt').value) : null,
       location_id:$('#pr_loc').value ? Number($('#pr_loc').value) : null,
       quantity:q, quantity_lost:lost, carcass_weight_kg:cw, input_cost:Number($('#pr_ic').value) || 0,
@@ -1615,7 +1615,7 @@ async function renderStock() {
     $('#tbl').innerHTML = `<div class="tw"><table><thead><tr><th>Product</th><th class="n">On hand</th><th class="n">Average cost</th><th class="n">Value</th><th class="n">Reorder at</th><th></th></tr></thead><tbody>
       ${rows.map((r, i) => `<tr class="click" data-i="${i}"><td>${esc(r.name)}</td><td class="n">${num(r.quantity_on_hand)} ${esc(r.unit)}</td><td class="n">${r.avg_unit_cost ? money(r.avg_unit_cost) : '–'}</td>
         <td class="n">${money(val(r))}</td><td class="n">${num(r.reorder_level)}</td><td>${r.low_stock ? '<span class="tag bad">Low</span>' : '<span class="tag">OK</span>'}</td></tr>`).join('')
-        || `<tr><td colspan="6" class="muted">${data.length ? 'Nothing matches.' : 'No stock items yet. Go to Setup > Products and tick "Track stock" on items such as feed, medicine, milk, eggs and meat.'}</td></tr>`}</tbody></table></div>`;
+        || `<tr><td colspan="6" class="muted">${data.length ? 'Nothing matches.' : 'No stock items yet. Go to Setup > Products and tick "Track stock" on items such as feed, medicine, eggs and meat.'}</td></tr>`}</tbody></table></div>`;
     $('#tbl').querySelectorAll('tr.click').forEach(tr => tr.onclick = () => stockHistory(rows[tr.dataset.i]));
   };
   $('#q').oninput = draw; $('#sf').onchange = draw; draw();
@@ -1691,10 +1691,12 @@ const ROLE_INFO = {
 
 async function renderUsers() {
   $('#main').innerHTML = `<div class="bar"><h2>Users</h2></div>
-    <p class="muted">Team members create their own account on the sign-in page ("Create account"). They appear here as Workers. Set their role and switch people off when they leave.</p>
+    <div class="row-actions" style="margin-bottom:10px"><button class="btn small" id="uAdd">+ Add user</button><button class="btn small ghost" id="uPw">Change my password</button><button class="btn small ghost" id="uAudit">View audit log</button></div>
+    <p class="muted">Only administrators can create accounts. Pick the role carefully: it decides what each person can see and change. Switch people off when they leave.</p>
     <div id="tbl"><p class="muted">Loading…</p></div>
     <div class="card" style="margin-top:16px"><b>What each role can do</b><div class="tw" style="margin-top:8px"><table><tbody>
       ${ROLES.map(r => `<tr><td><span class="tag">${cap(r)}</span></td><td>${esc(ROLE_INFO[r])}</td></tr>`).join('')}</tbody></table></div></div>`;
+  $('#uAdd').onclick = addUser; $('#uPw').onclick = changePassword; $('#uAudit').onclick = showAudit;
   let res = await sb.rpc('admin_users'), rows = res.data, limited = false;
   if (res.error) {
     const p = await sb.from('profiles').select('*').order('created_at');
@@ -1702,7 +1704,7 @@ async function renderUsers() {
     rows = p.data; limited = true;
   }
   const me = state.user.id;
-  $('#tbl').innerHTML = `${limited ? '<p class="muted">Email addresses are hidden until you run update_2.sql in Supabase.</p>' : ''}
+  $('#tbl').innerHTML = `${limited ? '<p class="muted">Email addresses are hidden until you run update_3_security_growth.sql in Supabase.</p>' : ''}
     <div class="tw"><table><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th><th>Joined</th></tr></thead><tbody>
     ${rows.map(u => `<tr data-id="${u.id}"><td><input class="un" value="${esc(u.full_name)}" style="min-width:150px"></td><td>${esc(u.email || '–')}</td>
       <td><select class="ur" ${u.id === me ? 'disabled' : ''}>${ROLES.map(x => `<option value="${x}" ${x === u.role ? 'selected' : ''}>${cap(x)}</option>`).join('')}</select></td>
@@ -1779,7 +1781,7 @@ function calcBroiler(R) {
                  medication:cat('medication'), drug:cat('drug'), charcoal:cat('charcoal'), other };
   cost.total = Object.values(cost).reduce((a, v) => a + v, 0);
   const expPrice = Number(b.expected_price) || 0, expKg = Number(b.expected_weight_kg) || 0;
-  return { b, F, feed, feedBy, deaths, dead, nightDead, cull, sold, alive, supplies, weights, cost, init,
+  return { hist:R.hist || [], b, F, feed, feedBy, deaths, dead, nightDead, cull, sold, alive, supplies, weights, cost, init,
            feedKg:sumBy(feed, r => r.kg), age:Math.max(dayOf(start, today()), 1),
            costRows:R.costs, expRev:alive * expPrice, expProfit:alive * expPrice - cost.total, perBird:alive ? cost.total / alive : 0,
            perKg:alive && expKg ? cost.total / (alive * expKg) : 0, lastW:weights.filter(w => w.fcr).slice(-1)[0] };
@@ -1791,10 +1793,11 @@ async function loadBroiler(id) {
     sb.from('poultry_batches').select('*, loc:locations(name)').eq('id', id).single(), q('poultry_events', 'event_date'), q('poultry_feed_log', 'log_date'),
     q('poultry_supply_log', 'log_date'), q('poultry_weights', 'sample_date'), q('poultry_costs', 'cost_date'),
     sb.from('feed_formulas').select('*').order('id'), sb.from('feed_formula_items').select('*').order('id'),
-    sb.from('poultry_targets').select('*').order('day'), sb.from('sale_items').select('quantity,line_total').eq('batch_id', id)]);
+    sb.from('poultry_targets').select('*').order('day'), sb.from('sale_items').select('quantity,line_total').eq('batch_id', id),
+    sb.from('feed_price_history').select('*').order('changed_at', { ascending:false }).limit(100)]);
   const bad = r.find(x => x.error); if (bad) throw bad.error;
-  const [b, events, feed, supplies, weights, costs, formulas, items, targets, sales] = r.map(x => x.data);
-  return calcBroiler({ batch:b, events, feed, supplies, weights, costs, formulas, items, targets, sales });
+  const [b, events, feed, supplies, weights, costs, formulas, items, targets, sales, hist] = r.map(x => x.data);
+  return calcBroiler({ batch:b, events, feed, supplies, weights, costs, formulas, items, targets, sales, hist });
 }
 
 async function renderBroiler() {
@@ -1823,7 +1826,7 @@ const delBtn = (t, id) => can(t) ? `<button class="btn small ghost" data-del="${
 const addBtn = (t, key, label) => can(t) ? `<button class="btn small" data-add="${key}">${label}</button>` : '';
 const fmt1 = v => v == null ? '–' : num(Math.round(v * 100) / 100);
 
-function formModal(title, fields, save) {
+function formModal(title, fields, save, after) {
   openModal(`<h3>${esc(title)}</h3><form id="fm"><div class="grid2">${fields.map(f => `<label>${esc(f.l)}${f.t === 'select'
     ? `<select id="f_${f.k}">${f.o.map(o => `<option value="${esc(o[0])}">${esc(o[1])}</option>`).join('')}</select>`
     : `<input id="f_${f.k}" type="${f.t || 'text'}" ${f.t === 'number' ? 'step="any" min="0"' : ''} value="${esc(f.v ?? '')}" ${f.req ? 'required' : ''} ${f.dl ? `list="dl_${f.k}"` : ''}>${f.dl ? `<datalist id="dl_${f.k}">${f.dl.map(x => `<option value="${esc(x)}">`).join('')}</datalist>` : ''}`}</label>`).join('')}</div>
@@ -1835,7 +1838,7 @@ function formModal(title, fields, save) {
     $('#fmSave').disabled = true;
     const err = await save(v);
     if (err) { $('#fmSave').disabled = false; return toast(err.message || String(err), true); }
-    closeModal(); toast('Saved'); drawBroiler();
+    closeModal(); toast('Saved'); (after || drawBroiler)();
   };
 }
 const brIns = (t, rows) => sb.from(t).insert(rows).then(r => r.error);
@@ -1894,6 +1897,14 @@ function usedTable(C) {
   const rest = C.costRows.filter(r => !fuel.includes(r));
   rows.push(['Other', 'Labour, electricity, curtains, transport…', '', '', money(sumBy(rest, r => r.total))]);
   return tbl([['Type'], ['Item'], ['Used', 1], ['Unit'], ['Cost', 1]], rows);
+}
+
+
+function feedHistHtml(C) {
+  const fn = Object.fromEntries(C.F.map(f => [f.id, f.name]));
+  return '<h4>Price change history</h4>' + tbl([['Changed on'], ['Feed'], ['Ingredient'], ['Old price', 1], ['New price', 1], ['Bag cost after', 1]],
+    C.hist.map(h => [String(h.changed_at).slice(0, 16).replace('T', ' '), esc(fn[h.formula_id] || ''), esc(h.ingredient), money(h.old_price), '<b>' + money(h.new_price) + '</b>', money(h.bag_cost_after)]), 'No price changes yet.') +
+    '<p class="muted">Feed already recorded keeps the price it was recorded at. A new price only applies to feed recorded from now on.</p>';
 }
 
 /* ---- tabs ---- */
@@ -1964,11 +1975,11 @@ const BT = {
       C.F.map(f => `<div class="card" style="margin-bottom:14px"><div class="bar"><b>${esc(f.name)}</b> <span class="muted">${esc(f.phase || '')} · ${num(f.plan_bags)} bags planned</span>
         <span>${addBtn('feed_formulas', 'ingredient:' + f.id, '+ Ingredient')} ${can('feed_formulas') ? `<button class="btn small ghost" data-add="editformula:${f.id}">Edit</button>` : ''}</span></div>` +
         tbl([['Ingredient'], ['kg / tonne', 1], ['Purchase unit'], ['Price / unit', 1], ['Cost / kg', 1], ['Cost / tonne', 1], ['Kg needed', 1], ['Units to buy', 1], ['Cost', 1], ['']],
-          [...f.items.map(i => [esc(i.ingredient), num(i.inclusion_kg_per_tonne), esc(i.unit_label), money(i.unit_price), money(i.perKg), money(i.perTonne), num(i.kg), num(i.units), money(i.cost), delBtn('feed_formula_items', i.id)]),
+          [...f.items.map(i => [esc(i.ingredient), num(i.inclusion_kg_per_tonne), esc(i.unit_label), money(i.unit_price), money(i.perKg), money(i.perTonne), num(i.kg), num(i.units), money(i.cost), (can('feed_formula_items') ? `<button class="btn small ghost" data-add="edititem:${i.id}">Edit price</button> ` : '') + delBtn('feed_formula_items', i.id)]),
            [`<b>Total</b>`, `<b class="${Math.abs(f.incl - 1000) > 0.01 ? 'neg' : ''}">${num(f.incl)}</b>`, Math.abs(f.incl - 1000) > 0.01 ? '<span class="neg">must add up to 1000</span>' : '✓ 1000 kg', '', '', '<b>' + money(f.perTonne) + '</b>', '', '', '<b>' + money(f.planCost) + '</b>', '']]) +
         `<p>Cost per kg <b>${money(f.perTonne / 1000)}</b> · cost per ${num(f.bag_kg)} kg bag <b>${money(f.perBag)}</b>${Number(f.milling_per_tonne) ? ' · milling ' + money(f.milling_per_tonne) + '/tonne' : ''}</p></div>`).join('') +
       '<h4>Ingredients to buy — whole cycle</h4>' + tbl([['Ingredient'], ['Kg', 1], ['Tonnes', 1], ['Cost', 1]], [...Object.entries(need).map(([k, v]) => [esc(k), num(v.kg), num(v.kg / 1000), money(v.cost)]),
-        ['<b>Total</b>', '<b>' + num(sumBy(Object.values(need), v => v.kg)) + '</b>', '', '<b>' + money(sumBy(Object.values(need), v => v.cost)) + '</b>']]);
+        ['<b>Total</b>', '<b>' + num(sumBy(Object.values(need), v => v.kg)) + '</b>', '', '<b>' + money(sumBy(Object.values(need), v => v.cost)) + '</b>']]) + feedHistHtml(C);
   }
 };
 
@@ -2012,6 +2023,10 @@ const ADD = {
   formula(C) { formModal('New feed formula', [{ k:'name', l:'Name (e.g. Broiler Starter)', req:1 }, { k:'phase', l:'Phase (e.g. Days 0-14)' }, { k:'bag', l:'Bag weight (kg)', t:'number', v:50 },
       { k:'plan', l:'Bags to produce per cycle', t:'number', v:0 }, { k:'mill', l:'Milling / mixing cost per tonne', t:'number', v:0 }],
       v => brIns('feed_formulas', { name:v.name, phase:v.phase, bag_kg:v.bag || 50, plan_bags:v.plan || 0, milling_per_tonne:v.mill || 0 })); },
+  edititem(C, id) { const it = C.F.flatMap(f => f.items).find(i => String(i.id) === String(id));
+    formModal('Update price · ' + it.ingredient, [{ k:'up', l:`New price per ${it.unit_label || 'unit'} (USD)`, t:'number', v:it.unit_price, req:1 }, { k:'inc', l:'Inclusion (kg per tonne of feed)', t:'number', v:it.inclusion_kg_per_tonne },
+      { k:'ukg', l:'Unit size (kg)', t:'number', v:it.unit_kg }, { k:'ul', l:'Purchase unit', v:it.unit_label }],
+      v => sb.from('feed_formula_items').update({ unit_price:v.up, inclusion_kg_per_tonne:v.inc || it.inclusion_kg_per_tonne, unit_kg:v.ukg || it.unit_kg, unit_label:v.ul }).eq('id', it.id).then(r => r.error)); },
   async 'editformula'(C, id) { const f = C.F.find(x => String(x.id) === String(id));
     formModal('Edit ' + f.name, [{ k:'phase', l:'Phase', v:f.phase }, { k:'bag', l:'Bag weight (kg)', t:'number', v:f.bag_kg }, { k:'plan', l:'Bags to produce per cycle', t:'number', v:f.plan_bags }, { k:'mill', l:'Milling cost per tonne', t:'number', v:f.milling_per_tonne }],
       v => sb.from('feed_formulas').update({ phase:v.phase, bag_kg:v.bag || 50, plan_bags:v.plan || 0, milling_per_tonne:v.mill || 0 }).eq('id', f.id).then(r => r.error)); },
@@ -2019,6 +2034,207 @@ const ADD = {
       { k:'ul', l:'Purchase unit (50kg bag…)' }, { k:'ukg', l:'Unit size (kg)', t:'number', v:50 }, { k:'up', l:'Price per unit (USD)', t:'number', req:1 }],
       v => v.inc > 0 ? brIns('feed_formula_items', { formula_id:Number(id), ingredient:v.ing, inclusion_kg_per_tonne:v.inc, unit_label:v.ul, unit_kg:v.ukg || 1, unit_price:v.up }) : { message:'Enter the inclusion' }); }
 };
+
+/* ============================================================
+   GROWTH SCREENS: Incubation & chick sales, Livestock overview,
+   Reports (day / week / month), Users (admin-created accounts, audit log)
+   ============================================================ */
+function wire(root, adds, after) {
+  root.querySelectorAll('[data-add]').forEach(x => x.onclick = () => { const [k, a] = x.dataset.add.split(':'); adds[k](a); });
+  root.querySelectorAll('[data-del]').forEach(x => x.onclick = async () => {
+    const [t, id] = x.dataset.del.split(':'); if (!confirm('Delete this entry?')) return;
+    const { error } = await sb.from(t).delete().eq('id', id); if (error) return toast(error.message, true);
+    toast('Deleted'); after(); });
+}
+function downloadCsv(name, rows) {
+  const cell = v => { let s = typeof v === 'string' && /^[=+\-@]/.test(v) ? "'" + v : String(v ?? ''); return '"' + s.replace(/"/g, '""') + '"'; };
+  const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([rows.map(r => r.map(cell).join(',')).join('\n')], { type:'text/csv' }));
+  a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+const none = () => {};
+const INC = { id:null };
+
+/* ---------- INCUBATION & CHICK SALES ---------- */
+async function renderIncubation() {
+  $('#main').innerHTML = `<div class="bar"><h2>Egg incubation & chick sales</h2>${can('incubation_batches') ? '<button class="btn small" id="incNew">+ New incubation batch</button>' : ''}</div><div id="incBody"><p class="muted">Loading…</p></div>`;
+  if ($('#incNew')) $('#incNew').onclick = async () => {
+    const { data } = await sb.from('incubation_batches').select('batch_code'); const n = String((data || []).length + 1).padStart(3, '0');
+    formModal('New incubation batch', [{ k:'code', l:'Batch ID', v:`INC-${new Date().getFullYear()}-${n}`, req:1 }, { k:'d', l:'Date eggs set', t:'date', v:today(), req:1 },
+      { k:'eggs', l:'Number of eggs set', t:'number', req:1 }, { k:'cost', l:'Cost per egg (USD)', t:'number', v:0 }, { k:'breed', l:'Breed' }, { k:'inc', l:'Incubator' }, { k:'notes', l:'Notes' }],
+      v => v.eggs > 0 ? brIns('incubation_batches', { batch_code:v.code, set_date:v.d, eggs_set:Math.round(v.eggs), egg_cost_each:v.cost || 0, breed:v.breed, incubator:v.inc, notes:v.notes }) : { message:'Enter the number of eggs' }, drawInc);
+  };
+  drawInc();
+}
+async function drawInc() {
+  const { data, error } = await sb.from('v_incubation_summary').select('*').order('set_date', { ascending:false });
+  if (error) return $('#incBody').innerHTML = `<p class="neg">${esc(error.message)}<br>Run update_3_security_growth.sql in Supabase first.</p>`;
+  if (!INC.id || !data.some(b => b.batch_id === INC.id)) INC.id = data[0]?.batch_id || null;
+  const T = k => sumBy(data, b => b[k]), money0 = money;
+  let html = `<div class="kpis">${kp('Eggs set', num(T('eggs_set')))}${kp('Chicks hatched', num(T('hatched')))}${kp('Overall hatch rate', T('eggs_set') ? fmt1(T('hatched') / T('eggs_set') * 100) + '%' : '–')}
+    ${kp('Chicks in stock', num(T('chicks_in_stock')))}${kp('Chick sales', money0(T('revenue')))}${kp('Profit', money0(T('profit')), T('profit') < 0 ? 'neg' : 'pos')}</div>` +
+    tbl([['Batch'], ['Set', 0], ['Expected hatch'], ['Eggs', 1], ['Hatched', 1], ['Hatch rate', 1], ['Infertile', 1], ['Dead in shell', 1], ['Sold', 1], ['In stock', 1], ['Cost', 1], ['Revenue', 1], ['Profit', 1], ['Status'], ['']],
+      data.map(b => [`<b>${esc(b.batch_code)}</b>`, b.set_date, b.expected_hatch_date || '', num(b.eggs_set), num(b.hatched), b.hatch_rate_pct + '%', num(b.infertile), num(b.dead_in_shell), num(b.chicks_sold),
+        '<b>' + num(b.chicks_in_stock) + '</b>', money(b.total_cost), money(b.revenue), `<span class="${b.profit < 0 ? 'neg' : 'pos'}">${money(b.profit)}</span>`, b.status, `<button class="btn small ${b.batch_id === INC.id ? '' : 'ghost'}" data-add="pick:${b.batch_id}">Open</button>`]),
+      'No incubation batches yet. Press "+ New incubation batch".');
+  const S = data.find(b => b.batch_id === INC.id);
+  if (S) {
+    const q = (t, o) => sb.from(t).select('*').eq('batch_id', S.batch_id).order(o).order('id');
+    const [ev, co, sa, cu] = await Promise.all([q('incubation_events', 'event_date'), q('incubation_costs', 'cost_date'), q('chick_sales', 'sale_date'), sb.from('customers').select('id,name').eq('active', true).order('name')]);
+    const E = ev.data || [], C = co.data || [], A = sa.data || [], CU = cu.data || [], cn = Object.fromEntries(CU.map(c => [c.id, c.name]));
+    const EV = { hatched:'Hatched', infertile:'Infertile (removed at candling)', dead_in_shell:'Dead in shell', chick_loss:'Chick died after hatching' };
+    html += `<h3 style="margin-top:22px">${esc(S.batch_code)} <span class="muted" style="font-size:14px">${esc(S.breed || '')} · set ${S.set_date}${S.hatch_date ? ' · hatched ' + S.hatch_date : ''}</span></h3>
+      <div class="kpis">${kp('Hatch rate', S.hatch_rate_pct + '%')}${kp('Hatch of fertile eggs', S.fertile_hatch_rate_pct == null ? '–' : S.fertile_hatch_rate_pct + '%')}${kp('Losses', num(S.infertile + S.dead_in_shell + S.chick_loss))}
+      ${kp('Cost per chick hatched', S.cost_per_chick == null ? '–' : money(S.cost_per_chick))}${kp('Chicks in stock', num(S.chicks_in_stock))}${kp('Profit', money(S.profit), S.profit < 0 ? 'neg' : 'pos')}</div>
+      <div class="bar"><h4>Results and losses</h4>${addBtn('incubation_events', 'event', '+ Record result / loss')}</div>` +
+      tbl([['Date'], ['Type'], ['Birds / eggs', 1], ['Notes'], ['']], E.slice().reverse().map(e => [e.event_date, EV[e.event_type], num(e.quantity), esc(e.notes), delBtn('incubation_events', e.id)])) +
+      `<div class="bar"><h4>Costs of this batch</h4>${addBtn('incubation_costs', 'cost', '+ Add cost')}</div>` +
+      tbl([['Date'], ['Item'], ['Quantity', 1], ['Unit cost', 1], ['Total', 1], ['']], [['', `Eggs (${num(S.eggs_set)} set)`, num(S.eggs_set), money(S.egg_cost / S.eggs_set), money(S.egg_cost), ''],
+        ...C.map(c => [c.cost_date, esc(c.item), num(c.quantity), money(c.unit_cost), money(c.total), delBtn('incubation_costs', c.id)]), ['', '<b>Total cost</b>', '', '', '<b>' + money(S.total_cost) + '</b>', '']]) +
+      `<div class="bar"><h4>Chick sales</h4>${addBtn('chick_sales', 'sale', '+ Record chick sale')}</div>` +
+      tbl([['Date'], ['Customer'], ['Chicks', 1], ['Price each', 1], ['Total', 1], ['Paid', 1], ['Owing', 1], ['']], [...A.slice().reverse().map(s => [s.sale_date, esc(cn[s.customer_id] || ''), num(s.quantity), money(s.unit_price), money(s.total), money(s.amount_paid),
+        s.total - s.amount_paid > 0 ? `<span class="neg">${money(s.total - s.amount_paid)}</span>` : '', delBtn('chick_sales', s.id)]), ['', '<b>Total</b>', '<b>' + num(S.chicks_sold) + '</b>', '', '<b>' + money(S.revenue) + '</b>', money(S.paid), '', '']]);
+    INC.ctx = { S, CU };
+  }
+  $('#incBody').innerHTML = html;
+  wire($('#incBody'), {
+    pick: id => { INC.id = Number(id); drawInc(); },
+    event: () => formModal('Record result / loss · ' + INC.ctx.S.batch_code, [{ k:'t', l:'What happened', t:'select', o:[['hatched', 'Chicks hatched'], ['infertile', 'Infertile eggs removed'], ['dead_in_shell', 'Dead in shell'], ['chick_loss', 'Chicks died after hatching']], v:'hatched' },
+      { k:'d', l:'Date', t:'date', v:today(), req:1 }, { k:'q', l:'Number', t:'number', req:1 }, { k:'n', l:'Notes' }],
+      v => v.q > 0 ? brIns('incubation_events', { batch_id:INC.id, event_type:v.t, event_date:v.d, quantity:Math.round(v.q), notes:v.n }) : { message:'Enter a number' }, drawInc),
+    cost: () => formModal('Add incubation cost', [{ k:'d', l:'Date', t:'date', v:today(), req:1 }, { k:'i', l:'Item (electricity, fuel, vaccine…)', req:1 }, { k:'q', l:'Quantity', t:'number', v:1 }, { k:'u', l:'Unit cost (USD)', t:'number', req:1 }],
+      v => brIns('incubation_costs', { batch_id:INC.id, cost_date:v.d, item:v.i, quantity:v.q || 1, unit_cost:v.u }), drawInc),
+    sale: () => formModal('Record chick sale · ' + INC.ctx.S.batch_code + ' (' + num(INC.ctx.S.chicks_in_stock) + ' in stock)', [{ k:'d', l:'Date', t:'date', v:today(), req:1 },
+      { k:'c', l:'Customer', t:'select', o:[['', '— walk-in / none —'], ...INC.ctx.CU.map(c => [c.id, c.name])], v:'' }, { k:'q', l:'Number of chicks', t:'number', req:1 }, { k:'p', l:'Price per chick (USD)', t:'number', req:1 },
+      { k:'paid', l:'Amount paid now (USD)', t:'number', v:0 }, { k:'n', l:'Notes' }],
+      v => v.q > 0 ? brIns('chick_sales', { batch_id:INC.id, sale_date:v.d, customer_id:v.c ? Number(v.c) : null, quantity:Math.round(v.q), unit_price:v.p, amount_paid:v.paid || 0, notes:v.n }) : { message:'Enter the number of chicks' }, drawInc)
+  }, drawInc);
+}
+
+/* ---------- LIVESTOCK OVERVIEW ---------- */
+async function renderOverview() {
+  $('#main').innerHTML = '<div class="bar"><h2>Livestock overview</h2></div><div id="ovBody"><p class="muted">Loading…</p></div>';
+  const [lo, pb, ps, inc] = await Promise.all([sb.from('v_livestock_overview').select('*').order('species'), sb.from('poultry_batches').select('id,batch_code,poultry_type,breed,acquisition_cost,status,acquired_on'),
+    sb.from('v_poultry_batch_summary').select('batch_id,remaining,running_cost'), sb.from('v_incubation_summary').select('batch_code,chicks_in_stock,total_cost,breed')]);
+  const bad = [lo, pb, ps, inc].find(r => r.error); if (bad) return $('#ovBody').innerHTML = `<p class="neg">${esc(bad.error.message)}<br>Run update_3_security_growth.sql in Supabase first.</p>`;
+  $('#ovBody').innerHTML = overviewHtml(lo.data, pb.data, ps.data, inc.data);
+  $('#ovBody').querySelectorAll('[data-go]').forEach(x => x.onclick = () => go(x.dataset.go));
+}
+function overviewHtml(L, PB, PS, INCB) {
+  const by = {}; L.forEach(r => (by[r.species] = by[r.species] || []).push(r));
+  const sps = Object.keys(by).sort(), n = k => r => Number(r[k]);
+  const rows = []; sps.forEach(sp => { const a = by[sp], t = k => sumBy(a, n(k));
+    rows.push([`<b>${esc(cap(sp))} — total</b>`, '', `<b>${num(t('in_stock'))}</b>`, num(t('born_here')), num(t('sold')), num(t('dead')), num(t('slaughtered')), money(t('purchase_cost')), money(t('health_cost')), money(t('current_value'))]);
+    a.forEach(r => rows.push(['', esc(r.breed), num(r.in_stock), num(r.born_here), num(r.sold), num(r.dead), num(r.slaughtered), money(r.purchase_cost), money(r.health_cost), money(r.current_value)])); });
+  const run = Object.fromEntries(PS.map(s => [s.batch_id, s])), act = PB.filter(b => b.status === 'active');
+  const prow = act.map(b => { const s = run[b.id] || {}, cost = Number(b.acquisition_cost) + Number(s.running_cost || 0);
+    return [`<b>${esc(b.batch_code)}</b>`, esc(cap(b.poultry_type)), esc(b.breed || ''), '<b>' + num(s.remaining) + '</b>', money(cost), Number(s.remaining) ? money(cost / Number(s.remaining)) : '–']; });
+  const birds = sumBy(act, b => (run[b.id] || {}).remaining), chicks = sumBy(INCB, c => c.chicks_in_stock);
+  const animals = sumBy(L, n('in_stock')), cost = sumBy(L, n('purchase_cost')) + sumBy(L, n('health_cost')) + sumBy(act, b => Number(b.acquisition_cost) + Number((run[b.id] || {}).running_cost || 0)) + sumBy(INCB.filter(c => c.chicks_in_stock > 0), c => c.total_cost);
+  return `<div class="kpis">${kp('Cattle, goats & other livestock', num(animals))}${kp('Birds in active poultry batches', num(birds))}${kp('Chicks ready to sell', num(chicks))}${kp('Costs tied up in stock', money(cost))}</div>
+    <div class="bar"><h4>Cattle, goats and other livestock — by type and breed</h4><button class="btn small ghost" data-go="livestock">Manage animals →</button></div>` +
+    tbl([['Type / breed'], ['Breed'], ['In stock', 1], ['Born here', 1], ['Sold', 1], ['Dead', 1], ['Slaughtered', 1], ['Purchase cost of stock', 1], ['Health cost', 1], ['Current value', 1]], rows, 'No animals registered yet. Add them under Livestock.') +
+    `<div class="bar"><h4>Chickens and other poultry — active batches</h4><button class="btn small ghost" data-go="poultry">Manage batches →</button></div>` +
+    tbl([['Batch'], ['Type'], ['Breed'], ['Birds now', 1], ['Cost so far', 1], ['Cost per bird', 1]], prow, 'No active poultry batches.') +
+    `<div class="bar"><h4>Hatchery — chicks in stock</h4><button class="btn small ghost" data-go="incubation">Open hatchery →</button></div>` +
+    tbl([['Incubation batch'], ['Breed'], ['Chicks in stock', 1], ['Batch cost', 1]], INCB.filter(c => c.chicks_in_stock > 0).map(c => [esc(c.batch_code), esc(c.breed || ''), '<b>' + num(c.chicks_in_stock) + '</b>', money(c.total_cost)]), 'No chicks in stock.');
+}
+
+/* ---------- REPORTS: daily / weekly / monthly ---------- */
+const RP = { p:'week', d:null, batch:'all' };
+const isoD = v => v.getFullYear() + '-' + String(v.getMonth() + 1).padStart(2, '0') + '-' + String(v.getDate()).padStart(2, '0');
+function periodRange(p, d) {
+  const x = D8(d); let a = new Date(x), b = new Date(x);
+  if (p === 'week') { a.setDate(x.getDate() - (x.getDay() + 6) % 7); b = new Date(a); b.setDate(a.getDate() + 6); }
+  if (p === 'month') { a = new Date(x.getFullYear(), x.getMonth(), 1); b = new Date(x.getFullYear(), x.getMonth() + 1, 0); }
+  return [isoD(a), isoD(b)];
+}
+/* pure calculation: raw rows in, report out */
+function reportCalc(R) {
+  const bag = Object.fromEntries(R.formulas.map(f => [f.id, Number(f.bag_kg)])), code = Object.fromEntries(R.batches.map(b => [b.id, b.batch_code]));
+  const B = {}, D = {};
+  const get = id => B[id] = B[id] || { id, code:code[id] || '#' + id, dead:0, bags:0, kg:0, feed:0, supplies:0, other:0, sold:0, rev:0 };
+  const day = d => D[d] = D[d] || { d, dead:0, bags:0, kg:0, feed:0, charcoal:0, sold:0, rev:0 };
+  R.events.forEach(e => { if (e.event_type === 'mortality') { get(e.batch_id).dead += Number(e.quantity); day(e.event_date).dead += Number(e.quantity); } });
+  R.feed.forEach(f => { const kg = Number(f.bags_used) * (bag[f.formula_id] || 50), c = Number(f.bags_used) * Number(f.price_per_bag), b = get(f.batch_id), x = day(f.log_date);
+    b.bags += Number(f.bags_used); b.kg += kg; b.feed += c; x.bags += Number(f.bags_used); x.kg += kg; x.feed += c; });
+  R.supplies.forEach(s => { const c = Number(s.qty_used) * Number(s.unit_price); get(s.batch_id).supplies += c; if (s.category === 'charcoal') day(s.log_date).charcoal += Number(s.qty_used); });
+  R.costs.forEach(c => get(c.batch_id).other += Number(c.total));
+  R.sales.forEach(s => { const b = get(s.batch_id), x = day(s.sales.sale_date); b.sold += Number(s.quantity); b.rev += Number(s.line_total); x.sold += Number(s.quantity); x.rev += Number(s.line_total); });
+  const batches = Object.values(B).map(b => ({ ...b, cost:b.feed + b.supplies + b.other, profit:b.rev - (b.feed + b.supplies + b.other) })).sort((p, q) => p.code.localeCompare(q.code));
+  const days = Object.values(D).sort((p, q) => p.d.localeCompare(q.d));
+  const hatch = { eggs:sumBy(R.incBatches, b => b.eggs_set), hatched:sumBy(R.incEvents.filter(e => e.event_type === 'hatched'), e => e.quantity), lost:sumBy(R.incEvents.filter(e => e.event_type !== 'hatched'), e => e.quantity),
+    sold:sumBy(R.chick, c => c.quantity), rev:sumBy(R.chick, c => c.total) };
+  const tot = k => sumBy(batches, b => b[k]);
+  return { batches, days, hatch, tot:{ dead:tot('dead'), bags:tot('bags'), kg:tot('kg'), feed:tot('feed'), cost:tot('cost'), rev:tot('rev'), profit:tot('profit'), sold:tot('sold') },
+    farmSales:sumBy(R.allSales, s => s.line_total), farmExpenses:sumBy(R.expenses, e => e.amount) };
+}
+async function renderReports() {
+  RP.d = RP.d || today();
+  const { data:pb } = await sb.from('poultry_batches').select('id,batch_code').order('acquired_on', { ascending:false });
+  $('#main').innerHTML = `<div class="bar"><h2>Reports</h2></div>
+    <div class="row-actions" style="margin-bottom:12px"><select id="rpP">${[['day', 'Daily'], ['week', 'Weekly'], ['month', 'Monthly']].map(x => `<option value="${x[0]}" ${RP.p === x[0] ? 'selected' : ''}>${x[1]}</option>`).join('')}</select>
+    <input type="date" id="rpD" value="${RP.d}"><select id="rpB"><option value="all">All batches</option>${(pb || []).map(b => `<option value="${b.id}" ${String(RP.batch) === String(b.id) ? 'selected' : ''}>${esc(b.batch_code)}</option>`).join('')}</select>
+    <button class="btn small ghost" id="rpPrint">Print / save as PDF</button><button class="btn small ghost" id="rpCsv">Download CSV</button></div><div id="rpBody"><p class="muted">Loading…</p></div>`;
+  $('#rpP').onchange = e => { RP.p = e.target.value; drawReport(); }; $('#rpD').onchange = e => { RP.d = e.target.value || today(); drawReport(); };
+  $('#rpB').onchange = e => { RP.batch = e.target.value; drawReport(); }; $('#rpPrint').onclick = () => window.print();
+  drawReport();
+}
+async function drawReport() {
+  const [a, z] = periodRange(RP.p, RP.d), one = RP.batch !== 'all' ? Number(RP.batch) : null;
+  const f = (t, c) => { let q = sb.from(t).select('*').gte(c, a).lte(c, z); return one ? q.eq('batch_id', one) : q; };
+  const safe = r => r.error ? [] : r.data || [];
+  const sq = sb.from('sale_items').select('batch_id,quantity,line_total,sales!inner(sale_date)').gte('sales.sale_date', a).lte('sales.sale_date', z).not('batch_id', 'is', null);
+  const res = await Promise.all([f('poultry_events', 'event_date'), f('poultry_feed_log', 'log_date'), f('poultry_supply_log', 'log_date'), f('poultry_costs', 'cost_date'), one ? sq.eq('batch_id', one) : sq,
+    sb.from('feed_formulas').select('id,bag_kg'), sb.from('poultry_batches').select('id,batch_code'), sb.from('sale_items').select('line_total,sales!inner(sale_date)').gte('sales.sale_date', a).lte('sales.sale_date', z),
+    sb.from('expenses').select('amount').gte('expense_date', a).lte('expense_date', z), sb.from('incubation_batches').select('eggs_set').gte('set_date', a).lte('set_date', z),
+    sb.from('incubation_events').select('event_type,quantity').gte('event_date', a).lte('event_date', z), sb.from('chick_sales').select('quantity,total').gte('sale_date', a).lte('sale_date', z)]);
+  const [ev, fl, su, co, sa, fo, ba, as_, ex, ib, ie, cs] = res.map(safe);
+  const C = reportCalc({ events:ev, feed:fl, supplies:su, costs:co, sales:sa, formulas:fo, batches:ba, allSales:as_, expenses:ex, incBatches:ib, incEvents:ie, chick:cs });
+  RP.C = C; RP.range = [a, z];
+  $('#rpBody').innerHTML = `<h3>${{ day:'Daily', week:'Weekly', month:'Monthly' }[RP.p]} report: ${a === z ? a : a + ' to ' + z}${one ? ' · ' + esc(C.batches[0]?.code || '') : ''}</h3>
+    <div class="kpis">${kp('Birds died', num(C.tot.dead))}${kp('Feed used', num(C.tot.bags) + ' bags <span class="muted" style="font-size:13px">' + num(C.tot.kg) + ' kg</span>')}${kp('Batch costs this period', money(C.tot.cost))}
+    ${kp('Poultry sales', money(C.tot.rev))}${kp('Chick sales', money(C.hatch.rev))}${kp('Result (sales − batch costs)', money(C.tot.profit + C.hatch.rev), C.tot.profit + C.hatch.rev < 0 ? 'neg' : 'pos')}</div>
+    <h4>By batch</h4>` + tbl([['Batch'], ['Deaths', 1], ['Feed bags', 1], ['Feed kg', 1], ['Feed cost', 1], ['Medicine & charcoal', 1], ['Other costs', 1], ['Total cost', 1], ['Birds sold', 1], ['Sales', 1], ['Result', 1]],
+      [...C.batches.map(b => [`<b>${esc(b.code)}</b>`, num(b.dead), num(b.bags), num(b.kg), money(b.feed), money(b.supplies), money(b.other), money(b.cost), num(b.sold), money(b.rev), `<span class="${b.profit < 0 ? 'neg' : 'pos'}">${money(b.profit)}</span>`]),
+       ['<b>Total</b>', num(C.tot.dead), num(C.tot.bags), num(C.tot.kg), money(C.tot.feed), '', '', money(C.tot.cost), num(C.tot.sold), money(C.tot.rev), money(C.tot.profit)]], 'No batch activity in this period.') +
+    (C.days.length > 1 || RP.p === 'day' ? '<h4>Day by day</h4>' + tbl([['Date'], ['Deaths', 1], ['Feed bags', 1], ['Feed kg', 1], ['Feed cost', 1], ['Charcoal bags', 1], ['Birds sold', 1], ['Sales', 1]],
+      C.days.map(d => [d.d, num(d.dead), num(d.bags), num(d.kg), money(d.feed), num(d.charcoal), num(d.sold), money(d.rev)])) : '') +
+    `<h4>Hatchery</h4>` + tbl([['Eggs set', 1], ['Chicks hatched', 1], ['Eggs / chicks lost', 1], ['Chicks sold', 1], ['Chick sales', 1]], [[num(C.hatch.eggs), num(C.hatch.hatched), num(C.hatch.lost), num(C.hatch.sold), money(C.hatch.rev)]]) +
+    `<h4>Whole farm in this period</h4>` + tbl([['Measure'], ['Amount', 1]], [['All sales', money(C.farmSales)], ['All expenses', money(C.farmExpenses)]]) +
+    '<p class="muted">Feed cost uses the price in force when each bag was recorded, so price changes never alter earlier reports.</p>';
+  $('#rpCsv').onclick = () => downloadCsv(`report_${RP.p}_${a}.csv`, [['Batch', 'Deaths', 'Feed bags', 'Feed kg', 'Feed cost', 'Medicine & charcoal', 'Other costs', 'Total cost', 'Birds sold', 'Sales', 'Result'],
+    ...C.batches.map(b => [b.code, b.dead, b.bags, b.kg, b.feed.toFixed(2), b.supplies.toFixed(2), b.other.toFixed(2), b.cost.toFixed(2), b.sold, b.rev.toFixed(2), b.profit.toFixed(2)]), [], ['Date', 'Deaths', 'Feed bags', 'Feed kg', 'Feed cost', 'Charcoal bags', 'Birds sold', 'Sales'],
+    ...C.days.map(d => [d.d, d.dead, d.bags, d.kg, d.feed.toFixed(2), d.charcoal, d.sold, d.rev.toFixed(2)])]);
+}
+
+/* ---------- USERS: admin-created accounts, password change, audit log ---------- */
+function tempPassword() { const c = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789', r = crypto.getRandomValues(new Uint32Array(14)); return Array.from(r, v => c[v % c.length]).join(''); }
+function addUser() {
+  formModal('Add a user', [{ k:'n', l:'Full name', req:1 }, { k:'e', l:'Email address', t:'email', req:1 },
+    { k:'r', l:'Role', t:'select', o:ROLES.map(r => [r, cap(r)]), v:'worker' }, { k:'p', l:'Temporary password (min 12 characters)', v:tempPassword(), req:1 }],
+    async v => {
+      if (!v.p || v.p.length < 12) return { message:'Password must be at least 12 characters' };
+      const { data, error } = await sb.functions.invoke('admin-create-user', { body:{ email:v.e, full_name:v.n, role:v.r, password:v.p } });
+      if (error || (data && data.error)) { let m = (data && data.error) || error.message; try { const j = await error.context.json(); m = j.error || m; } catch {} return { message:m }; }
+      setTimeout(() => openModal(`<h3>User created</h3><p>Give <b>${esc(v.n)}</b> these sign-in details privately (not by a group chat). Ask them to change the password straight after signing in.</p>
+        <div class="card"><div>Email: <b>${esc(v.e)}</b></div><div>Temporary password: <b>${esc(v.p)}</b></div><div>Role: <b>${esc(cap(v.r))}</b></div></div><div class="actions"><button class="btn" onclick="closeModal()">Done</button></div>`), 80);
+      renderUsers(); return null;
+    }, none);
+}
+function changePassword() {
+  formModal('Change my password', [{ k:'p', l:'New password (min 12 characters)', t:'password', req:1 }, { k:'p2', l:'Repeat new password', t:'password', req:1 }],
+    async v => { if (v.p !== v.p2) return { message:'The two passwords do not match' }; if (v.p.length < 12) return { message:'Use at least 12 characters' };
+      const { error } = await sb.auth.updateUser({ password:v.p }); return error; }, none);
+}
+async function showAudit() {
+  const [a, p] = await Promise.all([sb.from('audit_log').select('*').order('at', { ascending:false }).limit(200), sb.from('profiles').select('id,full_name')]);
+  if (a.error) return toast(a.error.message, true);
+  const nm = Object.fromEntries((p.data || []).map(x => [x.id, x.full_name]));
+  const what = r => r.op === 'UPDATE' ? Object.keys(r.new_data || {}).filter(k => k !== 'updated_at' && JSON.stringify(r.new_data[k]) !== JSON.stringify((r.old_data || {})[k])).map(k => `${k}: ${(r.old_data || {})[k] ?? '–'} → ${r.new_data[k] ?? '–'}`).join('; ') : '';
+  openModal(`<h3>Audit log — last 200 changes</h3><div class="tw" style="max-height:60vh;overflow:auto"><table><thead><tr><th>When</th><th>Who</th><th>Table</th><th>Action</th><th>Record</th><th>Change</th></tr></thead><tbody>${
+    a.data.map(r => `<tr><td>${esc(String(r.at).slice(0, 16).replace('T', ' '))}</td><td>${esc(nm[r.user_id] || r.user_id || 'system')} <span class="tag">${esc(r.user_role || '')}</span></td><td>${esc(r.table_name)}</td><td>${esc(r.op)}</td><td>${esc(r.row_id)}</td><td>${esc(what(r)).slice(0, 160)}</td></tr>`).join('')}</tbody></table></div>
+    <div class="actions"><button class="btn" onclick="closeModal()">Close</button></div>`);
+}
 
 /* start the login-page network */
 startNetwork($('#netLogin'), { icons:9, density:12000 });
