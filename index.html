@@ -2142,7 +2142,7 @@ function overviewHtml(L, PB, PS, INCB) {
 /* ---------- REPORTS: daily / weekly / monthly ---------- */
 const RP = { p:'week', d:null, batch:'all' };
 const isoD = v => v.getFullYear() + '-' + String(v.getMonth() + 1).padStart(2, '0') + '-' + String(v.getDate()).padStart(2, '0');
-function periodRange(p, d) {
+function reportRange(p, d) {
   const x = D8(d); let a = new Date(x), b = new Date(x);
   if (p === 'week') { a.setDate(x.getDate() - (x.getDay() + 6) % 7); b = new Date(a); b.setDate(a.getDate() + 6); }
   if (p === 'month') { a = new Date(x.getFullYear(), x.getMonth(), 1); b = new Date(x.getFullYear(), x.getMonth() + 1, 0); }
@@ -2180,7 +2180,7 @@ async function renderReports() {
   drawReport();
 }
 async function drawReport() {
-  const [a, z] = periodRange(RP.p, RP.d), one = RP.batch !== 'all' ? Number(RP.batch) : null;
+  const [a, z] = reportRange(RP.p, RP.d), one = RP.batch !== 'all' ? Number(RP.batch) : null;
   const f = (t, c) => { let q = sb.from(t).select('*').gte(c, a).lte(c, z); return one ? q.eq('batch_id', one) : q; };
   const safe = r => r.error ? [] : r.data || [];
   const sq = sb.from('sale_items').select('batch_id,quantity,line_total,sales!inner(sale_date)').gte('sales.sale_date', a).lte('sales.sale_date', z).not('batch_id', 'is', null);
